@@ -4,5 +4,9 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/__tests__/**/*.test.ts'],
+    environmentMatchGlobs: [
+      // DOM tests need jsdom
+      ['src/lib/__tests__/dom-helpers.test.ts', 'jsdom'],
+    ],
   },
 });
