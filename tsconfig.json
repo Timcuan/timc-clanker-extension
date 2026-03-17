@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "types": ["chrome"]
   },
-  "include": ["src", "wxt.config.ts"]
+  "include": ["src", "entrypoints", "wxt.config.ts"]
 }
