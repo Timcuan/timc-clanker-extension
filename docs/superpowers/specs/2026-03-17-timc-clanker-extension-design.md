@@ -91,7 +91,7 @@ timc-clanker-extension/
 │   │   ├── index.tsx
 │   │   └── sections/
 │   │       ├── WalletSection.tsx        # Vault UI: add/remove/toggle wallets, rotation mode
-│   │       ├── IdentitySection.tsx      # tokenAdmin address
+│   │       ├── IdentitySection.tsx      # Ghost Mode fee-recipient address (your wallet for receiving fees)
 │   │       ├── RewardsSection.tsx       # Default reward recipients template
 │   │       ├── DeploySection.tsx        # Default chain, fee preset, pool preset
 │   │       ├── ImageSection.tsx         # Pinata API key + secret
@@ -118,13 +118,15 @@ timc-clanker-extension/
 
 ## Typed Message Protocol
 
-All inter-context communication uses a single discriminated union. No raw string messages.
+Two separate message directions — never mix them in one union type.
 
 ```typescript
 // lib/messages.ts
 
+// ── Popup/Content → Service Worker (request/response via sendMessage) ──────────
 export type BgMessage =
-  | { type: 'SCRAPE' }
+  // NOTE: SCRAPE is sent popup → content script directly via chrome.tabs.sendMessage,
+  // NOT through the service worker. Content script responds directly to popup.
   | { type: 'DEPLOY'; payload: DeployPayload }
   | { type: 'UPLOAD_IMAGE'; url: string }
   | { type: 'UPLOAD_IMAGE_BLOB'; data: ArrayBuffer; filename: string }
@@ -132,7 +134,11 @@ export type BgMessage =
   | { type: 'GET_AVAILABLE_REWARDS'; token: `0x${string}`; recipient: `0x${string}`; chainId: number }
   | { type: 'GET_HISTORY' }
   | { type: 'WALLET_PING' }
-  | { type: 'WALLET_REQUEST'; request: EIP1193Request };
+  | { type: 'WALLET_REQUEST'; request: EIP1193Request }
+  | { type: 'UNLOCK_VAULT'; password: string }
+  | { type: 'LOCK_VAULT' }
+  | { type: 'VAULT_STATUS' };
+  // NOTE: BATCH_DEPLOY uses Port API (not sendMessage) — see Batch Deploy section.
 
 // NOTE: bigint is NOT serializable via structuredClone (chrome.runtime.sendMessage).
 // All bigint values must be serialized to string before sending and parsed back on receipt.
@@ -142,10 +148,26 @@ export type BgResponse<T extends BgMessage['type']> =
   T extends 'GET_AVAILABLE_REWARDS' ? { amount: string } :  // bigint.toString() — parse with BigInt(amount)
   T extends 'GET_HISTORY' ? { records: DeployRecord[] } :
   T extends 'WALLET_PING' ? { ready: true } :
+  T extends 'VAULT_STATUS' ? { unlocked: boolean; walletCount: number; activeIds: string[] } :
   { ok: true };
 
 // All BgResponse types also include an error branch:
 // { error: string } — handler must always check error before using result fields.
+
+// ── Service Worker → Popup (streamed via Port API) ────────────────────────────
+// Used exclusively for BATCH_DEPLOY progress frames.
+// BATCH_PROGRESS cannot use sendMessage — SW cannot push unsolicited messages to popup.
+export type SwEvent =
+  | { type: 'BATCH_PROGRESS'; walletId: string; index: number; total: number;
+      status: 'pending' | 'deploying' | 'success' | 'failed';
+      txHash?: `0x${string}`; tokenAddress?: `0x${string}`; error?: string }
+  | { type: 'BATCH_COMPLETE'; results: BatchDeployResult[] };
+
+// ── Content Script → Service Worker tab registration ─────────────────────────
+// Content script sends this on inject so SW can resolve tabId for wallet-bridge relay.
+export type ContentMessage =
+  | { type: 'REGISTER_TAB' }   // SW stores sender.tab.id in memory for Mode A relay
+  | { type: 'SCRAPE_RESULT'; data: ScrapedData }; // reply to popup's direct sendMessage
 ```
 
 ---
@@ -215,16 +237,36 @@ export const CHAIN_CONFIG = {
   },
 } as const;
 
-export async function getPublicClient(chainId: number) {
+// In-memory cache: once a healthy RPC is found per chain, reuse it for the session.
+// Cleared when SW goes idle. Avoids a live health-check round-trip on every deploy.
+const rpcCache = new Map<number, string>();  // chainId → best RPC URL
+
+async function probeRpc(url: string, chain: Chain, timeoutMs = 3000): Promise<boolean> {
+  try {
+    const client = createPublicClient({ chain, transport: http(url) });
+    await Promise.race([
+      client.getBlockNumber(),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs)),
+    ]);
+    return true;
+  } catch { return false; }
+}
+
+export async function getBestRpc(chainId: number): Promise<string> {
+  if (rpcCache.has(chainId)) return rpcCache.get(chainId)!;
   const config = CHAIN_CONFIG[chainId];
   for (const rpc of config.rpcs) {
-    try {
-      const client = createPublicClient({ chain: config.viemChain, transport: http(rpc) });
-      await client.getBlockNumber(); // health check
-      return client;
-    } catch { continue; }
+    if (await probeRpc(rpc, config.viemChain)) {
+      rpcCache.set(chainId, rpc);
+      return rpc;
+    }
   }
-  throw new Error(`All RPCs failed for chain ${chainId}`);
+  throw new Error(`All RPCs unavailable for chain ${chainId}`);
+}
+
+export async function getPublicClient(chainId: number): Promise<PublicClient> {
+  const rpc = await getBestRpc(chainId);
+  return createPublicClient({ chain: CHAIN_CONFIG[chainId].viemChain, transport: http(rpc) });
 }
 ```
 
@@ -248,6 +290,9 @@ interface ExtensionConfig {
   rotationIndex: number;               // round-robin cursor
 
   // IDENTITY
+  // In vault mode: each wallet's own address becomes tokenAdmin per deploy.
+  // This field is used as: (a) Ghost Mode fee-recipient override, (b) fallback tokenAdmin
+  // when wallet mode = 'injected' (Mode A). Required for Ghost Mode to work correctly.
   tokenAdmin: `0x${string}`;
 
   // DEFAULT DEPLOY SETTINGS
@@ -641,6 +686,10 @@ Shows an explicit "Fee Routing" panel before signing:
 │                                         │
 │  Vault recipient: 0x...you   ✅          │
 │                                         │
+│  ⚠️  tokenAdmin retains contract rights: │
+│  target can update token metadata URI   │
+│  (fees are still yours — only metadata) │
+│                                         │
 │  ✅ Ghost validator passed              │
 └─────────────────────────────────────────┘
 ```
@@ -837,17 +886,35 @@ For the competition + sniper strategy, Mode B is primary. Mode A remains for qui
 
 ### Mode A — Injected Wallet (Rabby/MetaMask, Chrome + Brave)
 
-Wallet bridge handshake prevents race condition:
+**Tab-ID registration:** The service worker cannot know which tab to relay `WALLET_REQUEST` to without a tab ID. The content script registers itself on inject:
+
+```typescript
+// content/wallet-bridge.ts — runs on every page load
+chrome.runtime.sendMessage({ type: 'REGISTER_TAB' });
+// SW handler: activeTabId = sender.tab.id  (stored in SW memory)
+```
+
+Wallet bridge handshake then prevents race conditions:
 
 ```
+content script loads → sends REGISTER_TAB → SW stores activeTabId
+
 popup
-  └─ BgMessage { type: 'WALLET_PING' }
-        └─ content/wallet-bridge.ts
-              └─ reply { ready: true }
-  └─ BgMessage { type: 'WALLET_REQUEST', request: EIP1193Request }
-        └─ content/wallet-bridge.ts
-              └─ window.ethereum.request(payload) → Rabby signs
-                    └─ reply with result
+  └─ sendMessage { type: 'WALLET_PING' }
+        └─ SW forwards to chrome.tabs.sendMessage(activeTabId, { type: 'WALLET_PING' })
+              └─ wallet-bridge.ts replies { ready: true }
+  └─ sendMessage { type: 'WALLET_REQUEST', request: EIP1193Request }
+        └─ SW forwards to chrome.tabs.sendMessage(activeTabId, ...)
+              └─ window.ethereum.request(payload) → Rabby signs → reply
+```
+
+If `activeTabId` is not set (tab navigated, content script not injected): SW returns `{ error: 'Wallet bridge not ready — reload the page' }`.
+
+**SCRAPE routing (popup → content script directly):**
+```typescript
+// popup/App.tsx — SCRAPE goes directly to content script, NOT through SW
+const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+const scraped = await chrome.tabs.sendMessage(tab.id!, { type: 'SCRAPE' });
 ```
 
 ---
@@ -921,37 +988,54 @@ After entering the master password once, the service worker holds unlocked `Wall
 
 ```typescript
 // Service worker in-memory only — never persisted
-const sessionWallets = new Map<string, WalletClient>();  // walletId → WalletClient
+// Cache PrivateKeyAccount (chain-agnostic) NOT WalletClient.
+// WalletClient is cheap to create per-deploy and must be chain-specific.
+// Caching accounts avoids silent chain-mismatch bugs when the user switches chains.
+const sessionAccounts = new Map<string, PrivateKeyAccount>();  // walletId → account
 
 // Unlock session: decrypt all active vault entries at once
-async function unlockVault(password: string, chainId: number): Promise<void> {
+async function unlockVault(password: string): Promise<void> {
   const { vaultEntries } = await storage.get();
   for (const entry of vaultEntries.filter(e => e.active)) {
     const pk = await decryptPrivateKey(entry.encryptedPK, entry.iv, entry.salt, password);
+    // NOTE: pk.fill(0) would throw TypeError — JS strings are immutable.
+    // Accept that PK string exists in V8 heap until GC. This is a known JS limitation.
     const account = privateKeyToAccount(pk as `0x${string}`);
-    const client = createWalletClient({
-      account,
-      chain: CHAIN_CONFIG[chainId].viemChain,
-      transport: http(await getBestRpc(chainId)),
-    });
-    sessionWallets.set(entry.id, client);
-    pk.fill(0); // zero out PK string — JS limitation: strings are immutable, but removes ref
+    sessionAccounts.set(entry.id, account);
   }
 }
 
+// Per-deploy: create fresh WalletClient with correct chain from cached account
+function getWalletClient(walletId: string, chainId: number, rpc: string): WalletClient {
+  const account = sessionAccounts.get(walletId);
+  if (!account) throw new Error('Vault locked — password required');
+  return createWalletClient({
+    account,
+    chain: CHAIN_CONFIG[chainId].viemChain,
+    transport: http(rpc),
+  });
+}
+
 // Session expires naturally when service worker goes idle (~30min)
-// Manual lock: sessionWallets.clear()
+// Manual lock: sessionAccounts.clear()
 ```
 
 **Session flow:**
 ```
 First deploy → popup shows password modal
-  └─ unlockVault(password) → all active wallets cached
-  └─ password discarded
-Subsequent deploys → sessionWallets.get(walletId) → sign immediately (no password)
-Idle 30min → SW killed → session cleared → next deploy re-prompts password
-Manual lock → [🔒 Lock Vault] button in popup header
+  └─ unlockVault(password) → all active accounts cached (chain-agnostic)
+  └─ password discarded immediately (not stored)
+Subsequent deploys → getWalletClient(walletId, chainId, rpc) → fresh client, correct chain
+Chain change → no issue — WalletClient is always created fresh per-deploy
+Idle 30min → SW killed → sessionAccounts cleared → next deploy re-prompts password
+Manual lock → [🔒 Lock Vault] button → sessionAccounts.clear()
 ```
+
+**Wrong password handling:**
+- `decryptPrivateKey` throws on AES-GCM auth failure (wrong password or corrupted data)
+- `unlockVault` catches this, clears any partial `sessionAccounts` entries, returns `{ error: 'Invalid password' }`
+- Popup shows "Incorrect password" — allows retry with no lockout (personal tool, no brute-force risk)
+- After 3 consecutive wrong attempts: show warning "Check your vault password in Options"
 
 ---
 
@@ -963,15 +1047,17 @@ Manual lock → [🔒 Lock Vault] button in popup header
 export function selectNextWallet(
   entries: WalletVaultEntry[],
   mode: RotationMode,
-  currentIndex: number
+  currentIndex: number,
+  activeWalletId: string | null  // required for 'manual' mode
 ): { walletId: string; nextIndex: number } {
   const active = entries.filter(e => e.active);
   if (active.length === 0) throw new Error('No active wallets in vault');
 
   switch (mode) {
     case 'manual':
-      // Use activeWalletId from config — no rotation
-      return { walletId: active[currentIndex % active.length].id, nextIndex: currentIndex };
+      // Use the explicitly selected wallet — ignore rotation index entirely
+      const manual = active.find(e => e.id === activeWalletId) ?? active[0];
+      return { walletId: manual.id, nextIndex: currentIndex };
 
     case 'round-robin':
       const next = currentIndex % active.length;
@@ -1006,14 +1092,30 @@ Deploy the **same token config** from multiple wallets in rapid succession. Each
 - Has `tokenAdmin` set to that wallet's address (unless Ghost Mode: tokenAdmin = target)
 - Fires sequentially (no parallel — avoids nonce-ordering issues)
 
-```typescript
-// lib/messages.ts — new message type
-| { type: 'BATCH_DEPLOY'; payload: DeployPayload; walletIds: string[] }
+**Why Port API is required for batch:**
+`chrome.runtime.sendMessage` is request/response only — the SW cannot push unsolicited progress frames to the popup. `BATCH_PROGRESS` is a SW-initiated push. Solution: popup opens a `chrome.runtime.Port` before the batch starts; SW sends `SwEvent` frames over the port; port close signals completion.
 
-// Response stream — one update per wallet
-| { type: 'BATCH_PROGRESS'; walletId: string; index: number; total: number;
-    status: 'pending' | 'deploying' | 'success' | 'failed';
-    txHash?: `0x${string}`; tokenAddress?: `0x${string}`; error?: string }
+```typescript
+// Popup side (popup/views/BatchView.tsx)
+const port = chrome.runtime.connect({ name: 'batch-deploy' });
+port.postMessage({ type: 'BATCH_DEPLOY', payload, walletIds });
+port.onMessage.addListener((event: SwEvent) => {
+  if (event.type === 'BATCH_PROGRESS') updateProgress(event);
+  if (event.type === 'BATCH_COMPLETE')  { port.disconnect(); showBatchSuccess(event.results); }
+});
+port.onDisconnect.addListener(() => {
+  // SW killed mid-batch — check storage for partial results, show recovery UI
+  handleBatchInterruption();
+});
+
+// Service worker side (background/handlers/batch.ts)
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== 'batch-deploy') return;
+  port.onMessage.addListener(async (msg) => {
+    if (msg.type !== 'BATCH_DEPLOY') return;
+    await runBatchDeploy(msg, port);
+  });
+});
 ```
 
 **Batch Deploy Flow:**
@@ -1023,23 +1125,38 @@ Deploy the **same token config** from multiple wallets in rapid succession. Each
 2. User selects which wallets to include (checkboxes — default: all active)
 3. User clicks [⚡ BATCH DEPLOY from N wallets]
 4. ConfirmView shows N deploy summary rows
-5. On confirm → BATCH_DEPLOY message to service worker
+5. On confirm → popup opens Port 'batch-deploy' → sends BATCH_DEPLOY over port
 
-[Service Worker]
-6. For each walletId in sequence:
-   a. Get WalletClient from sessionWallets (or unlock if expired)
-   b. Randomize salt: config.salt = crypto.getRandomValues(new Uint8Array(32))
-   c. Set tokenAdmin = wallet.address (or target in Ghost Mode)
+[Service Worker — background/handlers/batch.ts]
+6. Persist batch state to storage before starting:
+   { batchId, walletIds, payload, completedIds: [], startedAt }
+   (allows recovery if SW is killed mid-batch)
+7. For each walletId in sequence:
+   a. Get WalletClient via getWalletClient(walletId, chainId, rpc) — always fresh, correct chain
+   b. Randomize salt: config.salt = Array.from(crypto.getRandomValues(new Uint8Array(32)))
+   c. Set tokenAdmin = account.address (or target in Ghost Mode)
    d. Run ghost validator if Ghost Mode
-   e. deploySimulate() → if fail, skip this wallet + report error, continue
-   f. clanker.deploy() → txHash
-   g. waitForTransaction() → tokenAddress
-   h. Update walletEntry.lastUsedAt + deployCount in storage
-   i. Send BATCH_PROGRESS update to popup
-   j. Small delay between deploys (500ms) to avoid RPC rate limiting
+   e. deploySimulate() → if fail, send BATCH_PROGRESS(failed) + continue to next wallet
+   f. clanker.deploy() → txHash → send BATCH_PROGRESS(deploying)
+   g. waitForTransaction() → tokenAddress → send BATCH_PROGRESS(success)
+   h. Append walletId to completedIds in storage (crash recovery checkpoint)
+   i. Batch update wallet stats (defer all stats writes to step 9 — avoid write storm)
+   j. 500ms delay before next wallet
 
-7. All results collected → BatchSuccessView
+8. Batch write all stat updates (lastUsedAt, deployCount) in single storage.set() call
+9. Send BATCH_COMPLETE over port → port.disconnect()
 ```
+
+**SW-killed-mid-batch recovery:**
+```
+popup port.onDisconnect fires → popup reads storage['pendingBatch']
+  → shows recovery banner: "Batch interrupted. N/M deploys completed."
+  → [Resume] button: re-opens port, sends BATCH_DEPLOY with remaining walletIds
+  → [Dismiss] button: clears pendingBatch from storage
+```
+
+**Pinata failure mid-batch:**
+The image is pre-uploaded once before the batch starts (pre-upload happens on scrape, before user clicks batch deploy). The `ipfs://CID` is in the payload for all batch items. If pre-upload failed and user dismissed the warning, the deploy payload has no valid image — the batch deploy is blocked at validation step 3 with: "Image upload required before batch deploy." Pinata is not called per-wallet during batch.
 
 **BatchSuccessView:**
 ```
@@ -1120,21 +1237,21 @@ The `🔄` rotation icon opens a quick rotation mode picker (manual/round-robin/
 
 ---
 
-### New Message Types (multi-wallet additions)
+### Multi-Wallet Message Types (summary)
+
+All types are now canonical in the Typed Message Protocol section above. Key additions:
+
+- `BgMessage`: `UNLOCK_VAULT | LOCK_VAULT | VAULT_STATUS` — request/response via sendMessage
+- `SwEvent`: `BATCH_PROGRESS | BATCH_COMPLETE` — SW → popup via Port API (not sendMessage)
+- `ContentMessage`: `REGISTER_TAB | SCRAPE_RESULT` — content script → SW/popup
+- `BATCH_DEPLOY` is sent popup → SW over the Port (not via sendMessage)
 
 ```typescript
-// lib/messages.ts additions
-| { type: 'UNLOCK_VAULT'; password: string }
-| { type: 'LOCK_VAULT' }
-| { type: 'VAULT_STATUS' }
-| { type: 'BATCH_DEPLOY'; payload: DeployPayload; walletIds: string[] }
-| { type: 'BATCH_PROGRESS'; walletId: string; index: number; total: number;
-    status: 'pending' | 'deploying' | 'success' | 'failed';
-    txHash?: `0x${string}`; tokenAddress?: `0x${string}`; error?: string }
-
-// Responses
-T extends 'VAULT_STATUS' ? { unlocked: boolean; walletCount: number; activeIds: string[] } :
-T extends 'BATCH_DEPLOY'  ? { results: BatchDeployResult[] } :
+// Port protocol for batch (popup side):
+// 1. open port: chrome.runtime.connect({ name: 'batch-deploy' })
+// 2. send: port.postMessage({ type: 'BATCH_DEPLOY', payload, walletIds })
+// 3. receive: port.onMessage → SwEvent frames (BATCH_PROGRESS, BATCH_COMPLETE)
+// 4. port auto-closes when SW sends BATCH_COMPLETE
 ```
 
 ---
@@ -1180,16 +1297,26 @@ interface DeployRecord {
   symbol: string;
   chainId: number;
   txHash: `0x${string}`;
-  deployedAt: number;        // Unix ms
-  imageUrl?: string;         // ipfs:// or https://
+  deployedAt: number;             // Unix ms
+  imageUrl?: string;              // ipfs:// or https://
   pairedToken?: `0x${string}`;
+  walletId: string;               // vault wallet used to deploy (for claiming)
+  tokenAdmin: `0x${string}`;      // on-chain tokenAdmin (deployer's address or Ghost target)
+  rewardRecipient: `0x${string}`; // address that receives fees (your wallet, not target in Ghost)
+  isGhostDeploy: boolean;         // if true, tokenAdmin ≠ rewardRecipient
 }
 ```
 
 Merge strategy:
-1. Local `chrome.storage.local['deployHistory']`
-2. `GET https://clanker.world/api/search-creator?q={tokenAdmin}&limit=50`
+1. Local `chrome.storage.local['deployHistory']` — always authoritative (includes Ghost deploys)
+2. For non-Ghost deploys only: `GET https://clanker.world/api/search-creator?q={tokenAdmin}&limit=50`
+   — Ghost deploys use `tokenAdmin = targetAddress` so the API query would return the target's tokens, not ours. Skip API merge for Ghost records; local record is the only source of truth.
 3. Deduplicate by `address`, sort by `deployedAt` descending
+
+**Fee claiming in HistoryView:**
+- Always use `record.rewardRecipient` as the claim address — never `record.tokenAdmin`
+- For Ghost deploys: `rewardRecipient = yourAddress`, `tokenAdmin = targetAddress`
+- `claimRewards({ token: record.address, rewardRecipient: record.rewardRecipient })`
 
 ---
 
@@ -1255,10 +1382,10 @@ Twitter/X is server-side rendered. OG meta is available immediately.
 ---
 
 ### Parser: farcaster.ts (SSR — fast)
-- **Name + Symbol**: `og:title` → parse handle from URL path (`/warpcast.com/username`)
+- **Name + Symbol**: `og:title` → parse handle from URL pathname (`/username` or `/username/0xhash`)
 - **Image**: `og:image`
 - **Description**: `og:description`
-- **messageId**: extract cast hash from URL path (`/username/0xabc123...` → the `0x` segment)
+- **messageId**: extract cast hash from URL pathname (`/username/0xabc123...` → the `0x` hex segment)
   - Profile page: no messageId
 - **userId**: FID if available from meta or URL — leave blank if not found
 - **source**: `'farcaster'`, **platform**: `'farcaster'`
@@ -1276,11 +1403,12 @@ Twitter/X is server-side rendered. OG meta is available immediately.
 **Chain URL → chainId mapping**:
 ```typescript
 const GMGN_CHAIN_MAP: Record<string, number | null> = {
-  base: 8453,
-  eth:  1,
-  sol:  null,   // not supported by Clanker, show warning
-  bsc:  null,   // not in SDK
-  trx:  null,
+  base:  8453,
+  eth:   1,
+  arb:   42161,  // Arbitrum — gmgn.ai/arb/token/...
+  sol:   null,   // not supported by Clanker, show warning
+  bsc:   null,   // not in SDK
+  trx:   null,
   monad: 143,
 };
 ```
@@ -1492,13 +1620,24 @@ export default defineConfig({
       'https://clanker.world/*',
       'https://*.twimg.com/*',
       'https://*.farcaster.xyz/*',
+      // '*://*/*' is required: we fetch arbitrary og:image URLs from any CDN
+      // (GMGN tokens, generic pages, custom image hosts — not predictable at install time).
+      // Specific CDN hostnames cannot be enumerated upfront.
       '*://*/*',
     ],
+    // CSP note: MV3 default CSP blocks eval() and Function constructor.
+    // Ensure local SDK build (ClankerSDK 2026) does NOT use eval in output.
+    // Run: grep -r "eval(" dist/ in SDK after build to verify.
+    // viem uses standard crypto — no eval. SDK uses viem internally — should be safe.
   },
   vite: () => ({
     // Note: @wxt-dev/module-preact already injects preact/compat aliases.
     // Only add manual aliases if a third-party dep imports 'react' directly.
-    build: { target: 'es2022' },
+    build: {
+      target: 'es2022',
+      // Ensure no eval in output: rollup treeshakes it out for standard builds.
+      // If CSP violations appear at runtime, check: chrome://extensions → errors
+    },
   }),
 });
 ```
@@ -1556,6 +1695,11 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 25. **Batch deploy: randomize salt per wallet** — same token config but different salt → different token address per deployer
 26. **Batch deploy: sequential not parallel** — parallel deploys from different wallets can work (different nonces) but sequential is safer and avoids RPC rate limits; 500ms gap between each
 27. **tokenAdmin per batch entry** — in normal batch mode, each wallet's own address is tokenAdmin; in Ghost Mode, tokenAdmin = target for all entries
+28. **Batch wallet stat writes deferred** — do NOT write `lastUsedAt`/`deployCount` after each wallet; batch all stat updates in a single `storage.set()` call after the batch completes (avoids storage write storm + popup re-render flicker)
+29. **REGISTER_TAB required for Mode A** — content script must send `{ type: 'REGISTER_TAB' }` on inject; SW stores `sender.tab.id` in memory; wallet bridge relay uses this tabId
+30. **`btoa(String.fromCharCode(...array))`** — safe only for small buffers (≤ ~65k bytes). PK ciphertext is ~80 bytes — well within limit. Do not reuse this pattern for large data
+31. **Synthetic messageId is BigInt-safe in code** — generated with `BigInt(Date.now())` + string conversion. Risk exists at clanker indexer if it parses messageId as JS `Number` (precision loss for values > 9×10^15). Acceptable tradeoff — synthetic IDs are fallback-only; real scraped IDs (tweet IDs, cast hashes) are used whenever available
+32. **Session cache holds `PrivateKeyAccount` not `WalletClient`** — WalletClient is chain-specific; account is chain-agnostic. Create fresh WalletClient per-deploy with correct chain to avoid silent chain-mismatch
 
 ---
 
@@ -1563,7 +1707,7 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 
 ### Phase 1 — Foundation
 - [ ] WXT scaffold with Preact + TypeScript
-- [ ] `lib/chains.ts` — all 6 chains, RPC fallback arrays
+- [ ] `lib/chains.ts` — all 5 chains (Base, Ethereum, Arbitrum, Unichain, Monad), RPC fallback + getBestRpc cache
 - [ ] `lib/storage.ts` — typed wrapper with full defaults (10% static, Standard pool, Base chain)
 - [ ] `lib/messages.ts` — typed message protocol
 - [ ] `background/crypto.ts` — AES-256-GCM, 600k PBKDF2
