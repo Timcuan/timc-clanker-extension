@@ -246,18 +246,21 @@ interface ExtensionConfig {
 
   // DEFAULT DEPLOY SETTINGS
   defaultChain: number;               // chainId
+  defaultFeeType: 'static' | 'dynamic';     // default: 'static'
   defaultFeePreset: 'Static10' | 'Static3x3' | 'DynamicBasic' | 'Dynamic3' | 'Custom';
-  // Static10  = clankerFee: 1000, pairedFee: 0    (10% clanker side) ← default
-  // Static3x3 = clankerFee: 300,  pairedFee: 300  (6% total — within protocol-safe cap)
-  // DynamicBasic = baseFee: 100, maxFee: 500 (1%–5%)
-  // Dynamic3     = baseFee: 100, maxFee: 300 (1%–3%)
+  // Static10  = clankerFee: 1000, pairedFee: 0    (10% clanker side) ← DEFAULT
+  // Static3x3 = clankerFee: 300,  pairedFee: 300  (6% total — protocol-safe cap)
+  // DynamicBasic = baseFee: 100, maxFee: 1000 (1%–10%) ← user's dynamic default
+  // Dynamic3     = baseFee: 100, maxFee: 300  (1%–3%)
   defaultStaticClankerFeeBps: number;  // default: 1000 (10%)
   defaultStaticPairedFeeBps: number;   // default: 0
   defaultDynamicBaseBps: number;       // default: 100 (1%)
-  defaultDynamicMaxBps: number;        // default: 500 (5%)
+  defaultDynamicMaxBps: number;        // default: 1000 (10%)
   defaultPoolPreset: 'Standard' | 'Project' | 'TwentyETH';
   defaultPairedToken: 'WETH' | `0x${string}`;
-  defaultMarketCap: number;           // in ETH/native unit
+  defaultMarketCap: number;           // in ETH/native unit — default: 1 (1 ETH)
+  defaultSniperEnabled: boolean;      // default: true
+  enableQuickDeploy: boolean;         // default: true — skip form, go straight to ConfirmView
 
   // DEFAULT REWARDS TEMPLATE
   defaultRewards: Array<{
@@ -294,9 +297,103 @@ interface ExtensionConfig {
 
 ---
 
+## Smart Auto-Fill — Form Initialization
+
+**Goal: zero manual input for standard deploys.** When the popup opens, ALL fields are pre-populated before the user sees anything.
+
+### Initialization Order (on popup open)
+
+```
+1. Load ExtensionConfig from chrome.storage (Options defaults)
+2. Fire SCRAPE message to content script (parallel with step 1)
+3. Merge: scraped data overrides defaults only for page-specific fields
+4. Start background image pre-upload to Pinata (don't wait — show spinner on image)
+5. Form is immediately shown, fully populated — DEPLOY / QUICK DEPLOY enabled
+```
+
+### Field Population Rules
+
+| Field | Source | Fallback |
+|---|---|---|
+| Name | Scraped from page | `"Unnamed Token"` |
+| Symbol | `generateSymbol(handle/name)` | `"TOKEN"` |
+| Image | Scraped og:image → Pinata pre-upload | default CID (placeholder) |
+| Description | Scraped og:description | `"Deployed with Clanker"` |
+| Socials | Scraped links | empty (user can add later) |
+| Chain | GMGN URL detect → Options.defaultChain | Base (8453) |
+| Paired Token | Options.defaultPairedToken | WETH |
+| Pool Preset | Options.defaultPoolPreset | Standard |
+| Market Cap | Options.defaultMarketCap | 1 ETH |
+| Fee Type | Options.defaultFeeType | Static |
+| Clanker Fee | Options.defaultStaticClankerFeeBps | 1000 (10%) |
+| Paired Fee | Options.defaultStaticPairedFeeBps | 0 |
+| Sniper | Options.defaultSniperEnabled + saved values | Enabled (666777→41673, 15s) |
+| Rewards | Options.defaultRewards | [{admin: tokenAdmin, recipient: tokenAdmin, bps: 10000, token: 'Both'}] |
+| Token Admin | Options.tokenAdmin | blocked — must be set in Options |
+| Context | `buildDeployContext(scraped)` | synthetic messageId always set |
+
+### Background Image Pre-Upload
+
+Immediately on SCRAPE complete, the service worker starts uploading the image to Pinata in the background. The form shows an image spinner while this runs. When done, the `ipfs://CID` is ready — deploy fires instantly without waiting.
+
+```
+popup open
+  └─ SCRAPE → imageUrl found
+        └─ (background) UPLOAD_IMAGE → Pinata
+              └─ cache result in storage
+              └─ update image field silently
+  └─ user clicks DEPLOY → ipfs:// already ready → no wait
+```
+
+If upload fails: image field shows ⚠️ with retry button. Deploy is blocked until image resolves (or user removes image).
+
+---
+
+## Quick Deploy Mode
+
+When `enableQuickDeploy = true` (default), the popup shows a **[⚡ DEPLOY]** button prominently in addition to the full form. This skips section review entirely:
+
+```
+popup open → scrape + auto-fill → user sees:
+
+┌──────────────────────────────────────┐
+│  🔷 Clanker Deployer    [⚙] [📋]    │
+├──────────────────────────────────────┤
+│  [img]  BONK  $BONK   Base  10% fee  │
+│  Scraped: GMGN (base)   ✅            │
+│  Context: tweet:1234567890  ✅        │
+│  Image: uploading... ⏳              │
+├──────────────────────────────────────┤
+│  [⚡ QUICK DEPLOY]  ← big primary CTA │
+├──────────────────────────────────────┤
+│  ▼ Review / Edit form                │  ← secondary, collapsed by default
+│    ▶ Network & Pool    [Base/WETH]   │
+│    ▶ Fee Configuration [Static 10%] │
+│    ▶ ...                             │
+└──────────────────────────────────────┘
+```
+
+**[⚡ QUICK DEPLOY]** → directly opens ConfirmView (with summary of all auto-filled values) → user sees gas estimate → [Confirm & Sign].
+
+**Review / Edit form** is a secondary expandable area — available if the user wants to tweak before deploying but not required.
+
+### Status Indicators on Quick Deploy card
+
+```
+✅ Scraped from GMGN (base)
+✅ Context: tweet:1234567890          ← messageId extracted
+⏳ Image uploading... (pre-upload)    ← turns ✅ when done
+✅ Chain: Base  Fees: 10% static
+✅ Wallet: Rabby connected
+```
+
+Quick Deploy button is disabled if: image still uploading OR wallet not connected OR tokenAdmin not configured.
+
+---
+
 ## Full Deploy Form — Sections
 
-The popup form uses collapsible sections. Basic info is always expanded; advanced sections are collapsed by default.
+The popup form uses collapsible sections. All sections are pre-filled from Options defaults on open — user review only, no manual entry needed for standard deploys.
 
 ### Section 1 — Basic Info (always open)
 Scraped automatically, all editable:
@@ -324,19 +421,19 @@ Scraped automatically, all editable:
 > - Our 10% default (1000 bps each side) exceeds the cap. **Intentional** for this personal tool.
 
 #### Static Mode
-- **Default**: `clankerFee = 1000 bps (10%)`, `pairedFee = 0 bps (0%)` — 10% total
+- **Default**: `clankerFee = 1000 bps (10%)`, `pairedFee = 0 bps (0%)` — **10% total, user's preferred default**
 - Both fields fully editable, range 0–2000 bps (0–20%)
 - Displayed as `%` in UI — convert to/from bps internally (`% × 100`)
 - Preset chips for quick selection:
-  - `3%+3%` → 300/300 bps (within 6% protocol-safe cap)
+  - `3%+3%` → 300/300 bps (within 6% protocol-safe cap, Blue Badge eligible)
   - `5%` → 500/0 bps
   - `10%` ← **default** → 1000/0 bps
   - `Custom` → manual input
 
 #### Dynamic Mode
-- **Default**: `baseFee = 100 bps (1%)`, `maxFee = 500 bps (5%)`
+- **Default**: `baseFee = 100 bps (1%)`, `maxFee = 1000 bps (10%)` — **user's 1%–10% preferred range**
 - Fee fluctuates between baseFee and maxFee based on volatility
-- Displayed as range: `"1% → 5%"`
+- Displayed as range: `"1% → 10%"`
 - baseFee range: 0.25%–20% (25–2000 bps, SDK minimum = 25)
 - maxFee range: 0%–30% (0–3000 bps)
 - Constraint: `maxFee > baseFee` — validate before deploy
@@ -347,8 +444,8 @@ Scraped automatically, all editable:
   - `feeControlNumerator` (default 500,000,000)
   - `decayFilterBps` (default 7500 = 75%)
 - Preset chips:
-  - `1%–10%` ← **default** → baseFee 100, maxFee 1000, DynamicBasic params
-  - `1%–5%` → DynamicBasic preset from SDK
+  - `1%–10%` ← **default** → baseFee 100, maxFee 1000
+  - `1%–5%` → baseFee 100, maxFee 500 (Blue Badge eligible)
   - `1%–3%` → Dynamic3 preset from SDK
   - `Custom` → manual input
 
@@ -659,9 +756,13 @@ If the user adjusts market cap → custom tick → always auto-update `positions
 ## Deploy Flow (End-to-End)
 
 ```
-1. User opens popup → content script SCRAPE → ScrapedData (including messageId, userId) pre-fills FormView
-2. User reviews/edits all sections → clicks DEPLOY
-3. Popup validates: bps sum = 10000, addresses valid, image reachable
+1. User opens popup
+   → Options defaults loaded from chrome.storage
+   → content script SCRAPE fires in parallel → ScrapedData (name, symbol, image, messageId, userId)
+   → Background UPLOAD_IMAGE pre-upload starts immediately after SCRAPE
+   → ALL form fields populated — Quick Deploy card shown
+2. User clicks [⚡ QUICK DEPLOY] (or reviews form and clicks DEPLOY)
+3. Popup validates: bps sum = 10000, addresses valid, image ipfs:// ready
    3a. Validate pool tick alignment: positions.some(p => p.tickLower === tickIfToken0IsClanker)
 4. Popup sends BgMessage { type: 'DEPLOY', payload } to service worker
 
@@ -1029,24 +1130,31 @@ Managed in Options → Templates section.
 ┌──────────────────────────────────────┐
 │  🔷 Clanker Deployer    [⚙] [📋] [💾]│  gear=options, history, save template
 ├──────────────────────────────────────┤
-│  [img]  Name:   [___________________]│
-│         Symbol: [$__________________]│
-│  Desc:  [___________________________]│
-│  Links: [tw] [tg] [web]             │
+│  [img⏳] BONK    $BONK               │  ← scrape result, image pre-uploading
+│  GMGN (base) ✅  Context ✅  Wallet ✅│  ← status row
+│                                      │
+│  [⚡  QUICK DEPLOY  ]  ← big primary │  ← disabled while image uploading
 ├──────────────────────────────────────┤
-│  ▶ Network & Pool        [Base/WETH] │  collapsed, shows summary
-│  ▶ Fee Configuration     [Dynamic]  │
-│  ▶ Sniper Protection     [66%→4%]   │
-│  ▶ Extensions            [Vault ON] │
-│  ▶ Rewards               [1 recip.] │
-│  ▶ Advanced              [vanity ON]│
-├──────────────────────────────────────┤
-│  Admin: 0x...abc   Wallet: Rabby 🟢  │
-├──────────────────────────────────────┤
-│       [       DEPLOY TOKEN       ]   │
+│  ▼ Review / Edit  ▼                  │  ← expandable, collapsed by default
+│  ├─ Name:   [BONK________________]  │
+│  ├─ Symbol: [$BONK_______________]  │
+│  ├─ Desc:   [____________________]  │
+│  ├─ Links:  [tw] [tg] [web]        │
+│  ├─ ▶ Network & Pool  [Base/WETH]  │
+│  ├─ ▶ Fee Config      [10% static] │
+│  ├─ ▶ Sniper          [66%→4%]     │
+│  ├─ ▶ Extensions      [off]        │
+│  ├─ ▶ Rewards         [100% you]   │
+│  └─ ▶ Advanced        [vanity ON]  │
+│                                      │
+│  [     DEPLOY (with edits)     ]     │  ← secondary CTA if user edited
 └──────────────────────────────────────┘
 Width: 400px
 ```
+
+**Quick Deploy card status icons:**
+- `✅` = ready, `⏳` = in progress, `⚠️` = needs attention (blocks deploy)
+- Image spinner disappears when Pinata pre-upload completes → deploy unblocked
 
 ### ConfirmView
 - Summary of all params (chain, fees, extensions, rewards, gas estimate from simulation)
@@ -1161,11 +1269,11 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 ### Phase 1 — Foundation
 - [ ] WXT scaffold with Preact + TypeScript
 - [ ] `lib/chains.ts` — all 6 chains, RPC fallback arrays
-- [ ] `lib/storage.ts` — typed wrapper
+- [ ] `lib/storage.ts` — typed wrapper with full defaults (10% static, Standard pool, Base chain)
 - [ ] `lib/messages.ts` — typed message protocol
 - [ ] `background/crypto.ts` — AES-256-GCM, 600k PBKDF2
 - [ ] `background/index.ts` — keepalive alarm setup
-- [ ] Options page: all 6 sections including Templates
+- [ ] Options page: all 6 sections including Templates + enableQuickDeploy toggle
 - [ ] Build SDK: `cd "../ClankerSDK 2026" && bun run build`
 
 ### Phase 2 — Image Pipeline
@@ -1179,9 +1287,11 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 - [ ] `lib/symbol.ts`
 - [ ] `lib/ghost-validator.ts` — 7 assertions, throws on any misconfiguration
 - [ ] `lib/deploy-context-builder.ts` — builds `{ platform, messageId, id }` from ScrapedData
-- [ ] `lib/clanker.ts` — SDK wrapper with simulate support
+- [ ] `lib/clanker.ts` — SDK wrapper with simulate support + pool tick alignment helper
 - [ ] `background/handlers/deploy.ts` — full flow + ghost validator before simulate, context always set
-- [ ] Popup FormView (all sections) + ConfirmView (with Ghost fee routing panel) + PendingView + SuccessView
+- [ ] Popup FormView with Quick Deploy card (status row + ⚡ button) + collapsible full form
+- [ ] ConfirmView (with Ghost fee routing panel) + PendingView + SuccessView
+- [ ] Background image pre-upload triggered immediately after SCRAPE completes
 - [ ] Wallet Mode A (injected) + wallet-bridge.ts with handshake
 - [ ] Ghost Deploy toggle in Advanced section + locked Rewards section in Ghost Mode
 
