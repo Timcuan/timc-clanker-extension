@@ -90,7 +90,7 @@ timc-clanker-extension/
 │   │   ├── index.html
 │   │   ├── index.tsx
 │   │   └── sections/
-│   │       ├── WalletSection.tsx        # Mode A/B toggle + PK input + encrypt
+│   │       ├── WalletSection.tsx        # Vault UI: add/remove/toggle wallets, rotation mode
 │   │       ├── IdentitySection.tsx      # tokenAdmin address
 │   │       ├── RewardsSection.tsx       # Default reward recipients template
 │   │       ├── DeploySection.tsx        # Default chain, fee preset, pool preset
@@ -107,6 +107,7 @@ timc-clanker-extension/
 │       ├── symbol.ts                    # Auto-generate symbol from handle/name
 │       ├── ghost-validator.ts           # Ghost Deploy Mode safety checks (7 assertions)
 │       ├── deploy-context-builder.ts    # Build context { platform, messageId, id } from scrape
+│       ├── wallet-rotation.ts           # selectNextWallet() — round-robin/random/least-used
 │       └── templates.ts                 # Save/load deploy config templates
 │
 └── public/
@@ -236,10 +237,15 @@ export async function getPublicClient(chainId: number) {
 
 interface ExtensionConfig {
   // WALLET
-  walletMode: 'injected' | 'privatekey';
-  encryptedPK?: string;    // AES-256-GCM ciphertext, base64
-  pkIv?: string;           // base64 IV
-  pkSalt?: string;         // base64 PBKDF2 salt (separate from IV)
+  walletMode: 'injected' | 'vault';
+  // Mode A (injected): uses Rabby/MetaMask via wallet-bridge
+  // Mode B (vault): multi-wallet PK vault — primary mode
+
+  // WALLET VAULT (Mode B)
+  vaultEntries: WalletVaultEntry[];    // all stored wallets (see Wallet Architecture)
+  activeWalletId: string | null;       // selected wallet for manual mode
+  rotationMode: 'manual' | 'round-robin' | 'random' | 'least-used';
+  rotationIndex: number;               // round-robin cursor
 
   // IDENTITY
   tokenAdmin: `0x${string}`;
@@ -778,9 +784,10 @@ If the user adjusts market cap → custom tick → always auto-update `positions
 7. If simulate=true: clanker.deploySimulate(config) → catch revert early, show error
 8. Wallet signing:
    Mode A: WALLET_PING → content script ready check → relay EIP-1193 to Rabby
-   Mode B: password prompt → decrypt PK (600k PBKDF2) → viem.privateKeyToAccount(pk)
-          → createWalletClient({ account, chain: CHAIN_CONFIG[chainId].viemChain, transport: http(rpc) })
-          → PK cleared from memory immediately after WalletClient created
+   Mode B (Vault): check sessionWallets.has(walletId)
+     → if yes: use cached WalletClient (no password prompt)
+     → if no: prompt password → unlockVault(password, chainId) → cache all active wallets
+          → sessionWallets.get(walletId) → WalletClient ready
 9. clanker.deploy(config) → ClankerResult<{ txHash, waitForTransaction }>
    9a. ALWAYS destructure result: if (result.error) → send { error: result.error.message } to popup, abort
 9b. Send txHash to popup → show PendingView with explorer link
@@ -817,6 +824,17 @@ If the user adjusts market cap → custom tick → always auto-update `positions
 
 ## Wallet Architecture
 
+### Overview
+
+The extension supports two modes that can coexist:
+
+- **Mode A — Injected** (Rabby/MetaMask): one wallet from browser extension, used for quick single deploys
+- **Mode B — Wallet Vault**: multiple private keys encrypted at rest, unlocked with one master password, enabling multi-wallet rotation and batch deploy
+
+For the competition + sniper strategy, Mode B is primary. Mode A remains for quick single deploys.
+
+---
+
 ### Mode A — Injected Wallet (Rabby/MetaMask, Chrome + Brave)
 
 Wallet bridge handshake prevents race condition:
@@ -832,20 +850,292 @@ popup
                     └─ reply with result
 ```
 
-### Mode B — Private Key
+---
+
+### Mode B — Wallet Vault (Multi-Wallet)
+
+#### Storage Schema
+
+```typescript
+interface WalletVaultEntry {
+  id: string;                   // uuid — stable identifier
+  name: string;                 // user-defined label: "Sniper A", "Wallet 2", etc.
+  address: `0x${string}`;       // derived public address — stored plaintext for display
+  encryptedPK: string;          // AES-256-GCM ciphertext of 0x-prefixed private key, base64
+  iv: string;                   // base64 IV (unique per wallet)
+  salt: string;                 // base64 PBKDF2 salt (unique per wallet)
+  createdAt: number;            // Unix ms
+  lastUsedAt: number;           // Unix ms — for "least-used" rotation strategy
+  deployCount: number;          // total deploys from this wallet
+  active: boolean;              // whether included in rotation pool
+}
+
+// In ExtensionConfig:
+interface ExtensionConfig {
+  // ...
+  vaultEntries: WalletVaultEntry[];  // all wallets in vault
+  activeWalletId: string | null;     // selected wallet for next single deploy
+  rotationMode: 'manual' | 'round-robin' | 'random' | 'least-used';
+  rotationIndex: number;             // current position in round-robin
+}
+```
+
+#### Encryption Model
+
+One master password protects all vault entries. Each wallet encrypted independently with a **unique salt + IV** so compromise of one entry does not help decrypt others.
 
 ```typescript
 // background/crypto.ts
-// PBKDF2 with 600,000 iterations (OWASP 2023 recommendation)
-const key = await crypto.subtle.deriveKey(
-  { name: 'PBKDF2', salt: saltBytes, iterations: 600_000, hash: 'SHA-256' },
-  keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt']
-);
+
+export async function encryptPrivateKey(
+  pk: string,          // "0x..." hex string
+  password: string
+): Promise<{ encryptedPK: string; iv: string; salt: string }> {
+  const salt = crypto.getRandomValues(new Uint8Array(32));
+  const iv   = crypto.getRandomValues(new Uint8Array(12));
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']
+  );
+  const key = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 600_000, hash: 'SHA-256' },
+    keyMaterial, { name: 'AES-GCM', length: 256 }, false, ['encrypt']
+  );
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    key,
+    new TextEncoder().encode(pk)
+  );
+  return {
+    encryptedPK: btoa(String.fromCharCode(...new Uint8Array(ct))),
+    iv:   btoa(String.fromCharCode(...iv)),
+    salt: btoa(String.fromCharCode(...salt)),
+  };
+}
 ```
 
-Flow: popup password prompt → service worker decrypt → `viem.privateKeyToAccount(pk)` → sign tx → PK cleared from memory immediately.
+**Never stored:** plaintext PK, password, derived key. Only: ciphertext + IV + salt per wallet.
 
-**Never stored:** plaintext PK, password. Only: ciphertext + IV + salt.
+#### Session Key Cache
+
+After entering the master password once, the service worker holds unlocked `WalletClient` instances in memory for the session. No re-prompting for rapid batch deploys.
+
+```typescript
+// Service worker in-memory only — never persisted
+const sessionWallets = new Map<string, WalletClient>();  // walletId → WalletClient
+
+// Unlock session: decrypt all active vault entries at once
+async function unlockVault(password: string, chainId: number): Promise<void> {
+  const { vaultEntries } = await storage.get();
+  for (const entry of vaultEntries.filter(e => e.active)) {
+    const pk = await decryptPrivateKey(entry.encryptedPK, entry.iv, entry.salt, password);
+    const account = privateKeyToAccount(pk as `0x${string}`);
+    const client = createWalletClient({
+      account,
+      chain: CHAIN_CONFIG[chainId].viemChain,
+      transport: http(await getBestRpc(chainId)),
+    });
+    sessionWallets.set(entry.id, client);
+    pk.fill(0); // zero out PK string — JS limitation: strings are immutable, but removes ref
+  }
+}
+
+// Session expires naturally when service worker goes idle (~30min)
+// Manual lock: sessionWallets.clear()
+```
+
+**Session flow:**
+```
+First deploy → popup shows password modal
+  └─ unlockVault(password) → all active wallets cached
+  └─ password discarded
+Subsequent deploys → sessionWallets.get(walletId) → sign immediately (no password)
+Idle 30min → SW killed → session cleared → next deploy re-prompts password
+Manual lock → [🔒 Lock Vault] button in popup header
+```
+
+---
+
+### Wallet Rotation Strategies
+
+```typescript
+// lib/wallet-rotation.ts
+
+export function selectNextWallet(
+  entries: WalletVaultEntry[],
+  mode: RotationMode,
+  currentIndex: number
+): { walletId: string; nextIndex: number } {
+  const active = entries.filter(e => e.active);
+  if (active.length === 0) throw new Error('No active wallets in vault');
+
+  switch (mode) {
+    case 'manual':
+      // Use activeWalletId from config — no rotation
+      return { walletId: active[currentIndex % active.length].id, nextIndex: currentIndex };
+
+    case 'round-robin':
+      const next = currentIndex % active.length;
+      return { walletId: active[next].id, nextIndex: next + 1 };
+
+    case 'random':
+      const idx = Math.floor(Math.random() * active.length);
+      return { walletId: active[idx].id, nextIndex: currentIndex };
+
+    case 'least-used':
+      const least = active.reduce((a, b) => a.deployCount <= b.deployCount ? a : b);
+      return { walletId: least.id, nextIndex: currentIndex };
+  }
+}
+```
+
+**Strategy guide:**
+| Mode | Best for |
+|---|---|
+| `round-robin` | Systematic coverage — each wallet gets equal airtime |
+| `least-used` | Competition fairness — freshest wallets appear first |
+| `random` | Anti-pattern detection — unpredictable to bots |
+| `manual` | Precise control — you pick the wallet per deploy |
+
+---
+
+### Batch Deploy Mode
+
+Deploy the **same token config** from multiple wallets in rapid succession. Each deploy:
+- Uses its own wallet (different `msg.sender` → different deployer address on chain)
+- Gets a unique randomized `salt` (unless vanity is on — then sequential)
+- Has `tokenAdmin` set to that wallet's address (unless Ghost Mode: tokenAdmin = target)
+- Fires sequentially (no parallel — avoids nonce-ordering issues)
+
+```typescript
+// lib/messages.ts — new message type
+| { type: 'BATCH_DEPLOY'; payload: DeployPayload; walletIds: string[] }
+
+// Response stream — one update per wallet
+| { type: 'BATCH_PROGRESS'; walletId: string; index: number; total: number;
+    status: 'pending' | 'deploying' | 'success' | 'failed';
+    txHash?: `0x${string}`; tokenAddress?: `0x${string}`; error?: string }
+```
+
+**Batch Deploy Flow:**
+
+```
+1. User opens Batch Deploy panel (from FormView, requires 2+ vault wallets)
+2. User selects which wallets to include (checkboxes — default: all active)
+3. User clicks [⚡ BATCH DEPLOY from N wallets]
+4. ConfirmView shows N deploy summary rows
+5. On confirm → BATCH_DEPLOY message to service worker
+
+[Service Worker]
+6. For each walletId in sequence:
+   a. Get WalletClient from sessionWallets (or unlock if expired)
+   b. Randomize salt: config.salt = crypto.getRandomValues(new Uint8Array(32))
+   c. Set tokenAdmin = wallet.address (or target in Ghost Mode)
+   d. Run ghost validator if Ghost Mode
+   e. deploySimulate() → if fail, skip this wallet + report error, continue
+   f. clanker.deploy() → txHash
+   g. waitForTransaction() → tokenAddress
+   h. Update walletEntry.lastUsedAt + deployCount in storage
+   i. Send BATCH_PROGRESS update to popup
+   j. Small delay between deploys (500ms) to avoid RPC rate limiting
+
+7. All results collected → BatchSuccessView
+```
+
+**BatchSuccessView:**
+```
+┌──────────────────────────────────────────┐
+│  ⚡ Batch Deploy Complete  3/3 ✅         │
+├──────────────────────────────────────────┤
+│  ✅ Sniper A   0x...abc  [basescan][🌍]  │
+│  ✅ Wallet 2   0x...def  [basescan][🌍]  │
+│  ✅ Fresh 1    0x...ghi  [basescan][🌍]  │
+├──────────────────────────────────────────┤
+│  [Deploy Another Batch]  [View History]  │
+└──────────────────────────────────────────┘
+```
+
+---
+
+### Wallet Vault + Ghost Mode Combined Strategy
+
+The most powerful setup for competition + sniper attraction:
+
+```
+Wallet A deploys → tokenAdmin = fresh address X → fees → your main wallet (99%)
+Wallet B deploys → tokenAdmin = fresh address Y → fees → your main wallet (99%)
+Wallet C deploys → tokenAdmin = fresh address Z → fees → your main wallet (99%)
+```
+
+clanker.world sees: 3 different "creators", 3 different tokens.
+Snipers see: 3 fresh creators = higher trust signal.
+You receive: 99% of all fees from all 3 tokens.
+
+The `tokenAdmin` addresses (X, Y, Z) don't need to be actual wallets you control — they can be any address you want to attribute the token to (including the page's Twitter handle wallet if known).
+
+---
+
+### Options — Wallet Vault UI
+
+```
+┌─── Wallet Vault ───────────────────────────────────┐
+│  🔑 Master password set  [Change] [🔒 Lock Now]    │
+│  Rotation mode: [round-robin ▾]                    │
+│                                                    │
+│  ┌─ Wallets ───────────────────────────────────┐  │
+│  │ ☑ Sniper A   0x...abc  deploys: 12  [✏][🗑] │  │
+│  │ ☑ Wallet 2   0x...def  deploys:  3  [✏][🗑] │  │
+│  │ ☑ Fresh 1    0x...ghi  deploys:  0  [✏][🗑] │  │
+│  │ ☐ Old Wallet 0x...jkl  deploys: 47  [✏][🗑] │  │
+│  └────────────────────────────────────────────┘  │
+│  [+ Add Wallet]  [Import from keystore]           │
+│                                                   │
+│  + Add Wallet:                                    │
+│    Name: [________________]                       │
+│    Private Key: [0x______] [paste] [generate]     │
+│    [Save to Vault]                                │
+└───────────────────────────────────────────────────┘
+```
+
+**[generate]** button: generates a brand-new random private key inline (uses `viem.generatePrivateKey()`). The derived address shown immediately so user can fund it with ETH for gas before deploying.
+
+---
+
+### Updated FormView — Wallet Selector
+
+The Quick Deploy card shows the active wallet and rotation mode:
+
+```
+┌──────────────────────────────────────┐
+│  [img] BONK  $BONK  ✅ ✅ ✅         │
+│                                      │
+│  Wallet: [Sniper A 0x..abc ▾]  🔄    │  ← dropdown + rotation icon
+│  Next (round-robin): Wallet 2        │  ← shows which wallet fires next
+│                                      │
+│  [⚡ QUICK DEPLOY]                   │
+│  [⚡ BATCH DEPLOY (3 wallets)]        │  ← shown when vault has 2+ wallets
+└──────────────────────────────────────┘
+```
+
+The `🔄` rotation icon opens a quick rotation mode picker (manual/round-robin/random/least-used).
+
+---
+
+### New Message Types (multi-wallet additions)
+
+```typescript
+// lib/messages.ts additions
+| { type: 'UNLOCK_VAULT'; password: string }
+| { type: 'LOCK_VAULT' }
+| { type: 'VAULT_STATUS' }
+| { type: 'BATCH_DEPLOY'; payload: DeployPayload; walletIds: string[] }
+| { type: 'BATCH_PROGRESS'; walletId: string; index: number; total: number;
+    status: 'pending' | 'deploying' | 'success' | 'failed';
+    txHash?: `0x${string}`; tokenAddress?: `0x${string}`; error?: string }
+
+// Responses
+T extends 'VAULT_STATUS' ? { unlocked: boolean; walletCount: number; activeIds: string[] } :
+T extends 'BATCH_DEPLOY'  ? { results: BatchDeployResult[] } :
+```
 
 ---
 
@@ -1261,6 +1551,11 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 20. **Pool tick alignment** — `pool.positions` must have at least one entry where `tickLower === tickIfToken0IsClanker`; auto-update when market cap slider changes
 21. **Static fees > 600 bps total** — token will deploy and index normally, but won't receive Blue Badge verification on clanker.world. Our 10% default is intentional.
 22. **Dynamic `maxFee` > 500 bps** — same as above; no Blue Badge but deploys fine
+23. **Wallet Vault: unique salt + IV per entry** — each PK encrypted independently; one compromised entry does not help decrypt others
+24. **Session cache in SW memory only** — `sessionWallets` Map never persisted; cleared on SW idle kill (~30min) or manual lock
+25. **Batch deploy: randomize salt per wallet** — same token config but different salt → different token address per deployer
+26. **Batch deploy: sequential not parallel** — parallel deploys from different wallets can work (different nonces) but sequential is safer and avoids RPC rate limits; 500ms gap between each
+27. **tokenAdmin per batch entry** — in normal batch mode, each wallet's own address is tokenAdmin; in Ghost Mode, tokenAdmin = target for all entries
 
 ---
 
@@ -1273,7 +1568,7 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 - [ ] `lib/messages.ts` — typed message protocol
 - [ ] `background/crypto.ts` — AES-256-GCM, 600k PBKDF2
 - [ ] `background/index.ts` — keepalive alarm setup
-- [ ] Options page: all 6 sections including Templates + enableQuickDeploy toggle
+- [ ] Options page: all 6 sections including Templates + enableQuickDeploy toggle + Wallet Vault UI
 - [ ] Build SDK: `cd "../ClankerSDK 2026" && bun run build`
 
 ### Phase 2 — Image Pipeline
@@ -1287,10 +1582,13 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 - [ ] `lib/symbol.ts`
 - [ ] `lib/ghost-validator.ts` — 7 assertions, throws on any misconfiguration
 - [ ] `lib/deploy-context-builder.ts` — builds `{ platform, messageId, id }` from ScrapedData
+- [ ] `lib/wallet-rotation.ts` — selectNextWallet() with all 4 strategies
 - [ ] `lib/clanker.ts` — SDK wrapper with simulate support + pool tick alignment helper
-- [ ] `background/handlers/deploy.ts` — full flow + ghost validator before simulate, context always set
-- [ ] Popup FormView with Quick Deploy card (status row + ⚡ button) + collapsible full form
-- [ ] ConfirmView (with Ghost fee routing panel) + PendingView + SuccessView
+- [ ] `background/crypto.ts` — encrypt/decrypt per vault entry (unique salt + IV)
+- [ ] `background/handlers/deploy.ts` — full flow + ghost validator + vault session cache
+- [ ] `background/handlers/batch.ts` — sequential batch deploy with BATCH_PROGRESS stream
+- [ ] Popup FormView with Quick Deploy card + Batch Deploy button + wallet selector
+- [ ] ConfirmView (single + batch variants, Ghost fee routing panel) + PendingView + BatchSuccessView
 - [ ] Background image pre-upload triggered immediately after SCRAPE completes
 - [ ] Wallet Mode A (injected) + wallet-bridge.ts with handshake
 - [ ] Ghost Deploy toggle in Advanced section + locked Rewards section in Ghost Mode
