@@ -12,7 +12,7 @@
   "dependencies": {
     "preact": "^10.0.0",
     "viem": "^2.38.3",
-    "clanker-sdk": "file:/tmp/clanker-sdk-link"
+    "clanker-sdk": "file:../../../../ClankerSDK-2026"
   },
   "devDependencies": {
     "wxt": "latest",

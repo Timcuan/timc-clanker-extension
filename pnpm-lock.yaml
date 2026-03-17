@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       clanker-sdk:
-        specifier: file:/tmp/clanker-sdk-link
-        version: file:../../../../../../../tmp/clanker-sdk-link(@types/node@25.5.0)(typescript@5.9.3)(viem@2.47.4(typescript@5.9.3)(zod@4.3.6))
+        specifier: file:../../../../ClankerSDK-2026
+        version: file:../../../../ClankerSDK-2026(@types/node@25.5.0)(typescript@5.9.3)(viem@2.47.4(typescript@5.9.3)(zod@4.3.6))
       preact:
         specifier: ^10.0.0
         version: 10.29.0
@@ -1087,8 +1087,8 @@ packages:
   citty@0.2.1:
     resolution: {integrity: sha512-kEV95lFBhQgtogAPlQfJJ0WGVSokvLr/UEoFPiKKOXF7pl98HfUVUD0ejsuTCld/9xH9vogSywZ5KqHzXrZpqg==}
 
-  clanker-sdk@file:../../../../../../../tmp/clanker-sdk-link:
-    resolution: {directory: ../../../../../../../tmp/clanker-sdk-link, type: directory}
+  clanker-sdk@file:../../../../ClankerSDK-2026:
+    resolution: {directory: ../../../../ClankerSDK-2026, type: directory}
     hasBin: true
     peerDependencies:
       viem: ^2.38.3
@@ -3728,7 +3728,7 @@ snapshots:
 
   citty@0.2.1: {}
 
-  clanker-sdk@file:../../../../../../../tmp/clanker-sdk-link(@types/node@25.5.0)(typescript@5.9.3)(viem@2.47.4(typescript@5.9.3)(zod@4.3.6)):
+  clanker-sdk@file:../../../../ClankerSDK-2026(@types/node@25.5.0)(typescript@5.9.3)(viem@2.47.4(typescript@5.9.3)(zod@4.3.6)):
     dependencies:
       '@grammyjs/conversations': 2.1.1(grammy@1.41.1)
       '@openzeppelin/merkle-tree': 1.0.8
