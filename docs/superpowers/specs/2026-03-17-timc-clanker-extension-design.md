@@ -106,6 +106,7 @@ timc-clanker-extension/
 │       ├── pinata.ts                    # Pinata pinFileToIPFS wrapper
 │       ├── symbol.ts                    # Auto-generate symbol from handle/name
 │       ├── ghost-validator.ts           # Ghost Deploy Mode safety checks (7 assertions)
+│       ├── deploy-context-builder.ts    # Build context { platform, messageId, id } from scrape
 │       └── templates.ts                 # Save/load deploy config templates
 │
 └── public/
@@ -245,12 +246,15 @@ interface ExtensionConfig {
 
   // DEFAULT DEPLOY SETTINGS
   defaultChain: number;               // chainId
-  defaultFeePreset: 'Static10' | 'DynamicDefault' | 'DynamicBasic' | 'Dynamic3' | 'Custom';
-  // Static10 = clankerFee: 1000, pairedFee: 1000 (10% each) ← default
-  // DynamicDefault = baseFee: 100, maxFee: 1000 (1%–10%) ← user default for dynamic
-  defaultStaticFeeBps: number;       // default: 1000 (10%), applies to both clankerFee + pairedFee
-  defaultDynamicBaseBps: number;     // default: 100 (1%)
-  defaultDynamicMaxBps: number;      // default: 1000 (10%)
+  defaultFeePreset: 'Static10' | 'Static3x3' | 'DynamicBasic' | 'Dynamic3' | 'Custom';
+  // Static10  = clankerFee: 1000, pairedFee: 0    (10% clanker side) ← default
+  // Static3x3 = clankerFee: 300,  pairedFee: 300  (6% total — within protocol-safe cap)
+  // DynamicBasic = baseFee: 100, maxFee: 500 (1%–5%)
+  // Dynamic3     = baseFee: 100, maxFee: 300 (1%–3%)
+  defaultStaticClankerFeeBps: number;  // default: 1000 (10%)
+  defaultStaticPairedFeeBps: number;   // default: 0
+  defaultDynamicBaseBps: number;       // default: 100 (1%)
+  defaultDynamicMaxBps: number;        // default: 500 (5%)
   defaultPoolPreset: 'Standard' | 'Project' | 'TwentyETH';
   defaultPairedToken: 'WETH' | `0x${string}`;
   defaultMarketCap: number;           // in ETH/native unit
@@ -312,20 +316,27 @@ Scraped automatically, all editable:
 
 **Default fee type: Static 10%**
 
+> **Protocol compatibility notes** (from validator analysis):
+> - Static total fee > **600 bps (6%)** → token deploys and **indexes normally**, but will NOT receive Blue Badge verification on clanker.world
+> - Static total fee ≤ 500 bps → eligible for strict/verified mode (Blue Badge)
+> - Dynamic `maxFee` > **500 bps (5%)** → same: indexed but no Blue Badge
+> - These are display-tier distinctions only — tokens deploy regardless of fee level
+> - Our 10% default (1000 bps each side) exceeds the cap. **Intentional** for this personal tool.
+
 #### Static Mode
-- **Default**: `clankerFee = 1000 bps (10%)`, `pairedFee = 1000 bps (10%)`
+- **Default**: `clankerFee = 1000 bps (10%)`, `pairedFee = 0 bps (0%)` — 10% total
 - Both fields fully editable, range 0–2000 bps (0–20%)
 - Displayed as `%` in UI — convert to/from bps internally (`% × 100`)
 - Preset chips for quick selection:
-  - `1%` → 100/100 bps
-  - `5%` → 500/500 bps
-  - `10%` ← **default** → 1000/1000 bps
+  - `3%+3%` → 300/300 bps (within 6% protocol-safe cap)
+  - `5%` → 500/0 bps
+  - `10%` ← **default** → 1000/0 bps
   - `Custom` → manual input
 
 #### Dynamic Mode
-- **Default**: `baseFee = 100 bps (1%)`, `maxFee = 1000 bps (10%)`
+- **Default**: `baseFee = 100 bps (1%)`, `maxFee = 500 bps (5%)`
 - Fee fluctuates between baseFee and maxFee based on volatility
-- Displayed as range: `"1% → 10%"`
+- Displayed as range: `"1% → 5%"`
 - baseFee range: 0.25%–20% (25–2000 bps, SDK minimum = 25)
 - maxFee range: 0%–30% (0–3000 bps)
 - Constraint: `maxFee > baseFee` — validate before deploy
@@ -544,12 +555,114 @@ In HistoryView, Ghost Deploy tokens show:
 
 ---
 
+## Deploy Context Builder (`lib/deploy-context-builder.ts`)
+
+**Critical for indexing on clanker.world.** A token without a valid `context.messageId` will not appear in clanker deployer scanners.
+
+```typescript
+// lib/deploy-context-builder.ts
+
+import type { ScrapedData } from './messages';
+
+interface ClankerDeployContext {
+  interface: string;    // e.g. 'ClankerExtension'
+  platform: string;     // 'twitter' | 'farcaster' | 'clanker' | 'website' | etc.
+  messageId: string;    // tweet ID (digits), cast hash (0x...), or synthetic timestamp ID
+  id?: string;          // Twitter user ID or Farcaster FID (optional but improves matching)
+}
+
+const PLATFORM_MAP: Record<string, string> = {
+  twitter: 'twitter',
+  farcaster: 'farcaster',
+  gmgn: 'clanker',     // GMGN tokens → platform 'clanker' (no social matching)
+  generic: 'website',
+};
+
+function generateSyntheticMessageId(): string {
+  // Numeric synthetic ID matching validator's format: 1800000000000000000 + Date.now()
+  return (1800000000000000000n + BigInt(Date.now())).toString();
+}
+
+export function buildDeployContext(
+  scraped: ScrapedData,
+  interfaceName: string = 'ClankerExtension'
+): ClankerDeployContext {
+  const platform = PLATFORM_MAP[scraped.source ?? 'generic'] ?? 'website';
+
+  // messageId: use what parser extracted, or generate synthetic fallback
+  const messageId = scraped.messageId?.trim() || generateSyntheticMessageId();
+
+  return {
+    interface: interfaceName,
+    platform,
+    messageId,
+    ...(scraped.userId ? { id: scraped.userId } : {}),
+  };
+}
+```
+
+**Rules:**
+1. `platform` is always set — never empty or undefined
+2. `messageId` is always set — synthetic fallback if parser couldn't extract one
+3. `id` (user ID) set only when available — warning logged if missing for twitter/farcaster
+4. `'x'` is never used as platform — always normalize to `'twitter'`
+5. This context is passed directly to the SDK `ClankerTokenV4.context` field
+
+---
+
+## Pool Tick Alignment
+
+**Critical for successful deployment.** The SDK validates: at least one position in `pool.positions` must have `tickLower === pool.tickIfToken0IsClanker`. Mismatch causes a simulation revert.
+
+### How Market Cap Translates to Tick
+
+```typescript
+// SDK utility: src/utils/market-cap.ts
+import { getTickFromMarketCap } from 'clanker-sdk/utils';
+
+// Returns: { pairedToken: 'WETH', tickIfToken0IsClanker, tickSpacing: 200 }
+const { tickIfToken0IsClanker } = getTickFromMarketCap(marketCapInEth);
+```
+
+### Position Auto-Alignment Rule
+
+When the market cap slider changes `tickIfToken0IsClanker`, the **first position's `tickLower`** must be updated to match:
+
+```typescript
+// In FormView state update:
+function onMarketCapChange(newMarketCap: number) {
+  const { tickIfToken0IsClanker } = getTickFromMarketCap(newMarketCap);
+
+  // Update pool config — first position tickLower MUST match tick
+  setPoolConfig(prev => ({
+    ...prev,
+    tickIfToken0IsClanker,
+    positions: prev.positions.map((pos, i) =>
+      i === 0
+        ? { ...pos, tickLower: tickIfToken0IsClanker }
+        : pos
+    ),
+  }));
+}
+```
+
+### Preset Positions
+
+The Standard/Project/TwentyETH SDK presets (`POOL_POSITIONS` in `src/constants.ts`) are defined with `tickLower = -230400` (default tick for ~1 ETH market cap). These presets are safe to use as-is only when `tickIfToken0IsClanker = -230400`.
+
+If the user adjusts market cap → custom tick → always auto-update `positions[0].tickLower`.
+
+**Rule: never allow a deploy where `pool.positions.every(p => p.tickLower !== pool.tickIfToken0IsClanker)`.**
+
+---
+
 ## Deploy Flow (End-to-End)
 
 ```
-1. User opens popup → content script SCRAPE → ScrapedData pre-fills FormView
+1. User opens popup → content script SCRAPE → ScrapedData (including messageId, userId) pre-fills FormView
 2. User reviews/edits all sections → clicks DEPLOY
 3. Popup validates: bps sum = 10000, addresses valid, image reachable
+   3a. Validate pool tick alignment: positions.some(p => p.tickLower === tickIfToken0IsClanker)
 4. Popup sends BgMessage { type: 'DEPLOY', payload } to service worker
 
 [Service Worker: handlers/deploy.ts]
@@ -558,6 +671,9 @@ In HistoryView, Ghost Deploy tokens show:
    b. If cached → return ipfs://CID immediately
    c. If not → fetch as blob → uploadToPinata → cache result → return ipfs://CID
 6. Build ClankerTokenV4 config from payload (full schema including extensions)
+   6a. ALWAYS call buildDeployContext(scraped, config.contextInterface) → set config.context
+       - platform, messageId (or synthetic fallback), id (if present)
+       - Never deploy with empty context.messageId — always falls back to synthetic
 7. If simulate=true: clanker.deploySimulate(config) → catch revert early, show error
 8. Wallet signing:
    Mode A: WALLET_PING → content script ready check → relay EIP-1193 to Rabby
@@ -740,6 +856,10 @@ Twitter/X is server-side rendered. OG meta is available immediately.
 - **Image**: `og:image` (Twitter CDN high-res URL)
 - **Description**: `og:description` (bio text)
 - **Social**: current URL as twitter social
+- **messageId**: extract from URL if on a tweet page (`/status/(\d+)` → digits only)
+  - Profile page (`/username`): no messageId, deploy-context-builder generates synthetic
+- **userId**: `meta[name="twitter:site"]` or user numeric ID from page — leave blank if not found; clanker.world uses it for improved matching but absence is not blocking
+- **source**: `'twitter'`, **platform**: `'twitter'`
 
 ---
 
@@ -747,6 +867,10 @@ Twitter/X is server-side rendered. OG meta is available immediately.
 - **Name + Symbol**: `og:title` → parse handle from URL path (`/warpcast.com/username`)
 - **Image**: `og:image`
 - **Description**: `og:description`
+- **messageId**: extract cast hash from URL path (`/username/0xabc123...` → the `0x` segment)
+  - Profile page: no messageId
+- **userId**: FID if available from meta or URL — leave blank if not found
+- **source**: `'farcaster'`, **platform**: `'farcaster'`
 
 ---
 
@@ -866,24 +990,23 @@ interface ScrapedData {
     telegram?: string;
     website?: string;
   };
-  detectedChainId?: number | null;  // GMGN only — auto-select chain
+  detectedChainId?: number | null;       // GMGN only — auto-select chain
   source?: 'twitter' | 'farcaster' | 'gmgn' | 'generic';
-}
 
-All parsers return:
-```typescript
-interface ScrapedData {
-  name: string;
-  symbol: string;
-  description?: string;
-  imageUrl?: string;
-  socials: {
-    twitter?: string;
-    telegram?: string;
-    website?: string;
-  };
+  // --- Context fields for Clanker indexing ---
+  // CRITICAL: without messageId the token may not index on clanker.world
+  pageUrl?: string;       // Full URL of current page (used to extract messageId)
+  messageId?: string;     // Tweet ID (digits only) or Farcaster cast hash (0x...)
+  userId?: string;        // Twitter user numeric ID or Farcaster FID (for context.id)
 }
 ```
+
+**messageId extraction rules** (from protocol validator):
+- Twitter/X: extract numeric ID from `/status/1234567890` URL path segment
+- Farcaster: extract `0x`-prefixed cast hash from warpcast URL path
+- GMGN: use token contract address as messageId (prefixed `0x`) with platform `clanker`
+- Generic: use page URL as messageId (will be stored as-is, not a social message ID)
+- If extraction fails: `deploy-context-builder.ts` generates a synthetic messageId (timestamp-based)
 
 ---
 
@@ -1024,6 +1147,12 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 14. **Ghost Mode: ALL reward slot `admin` must be yourAddress** — target can hijack slots if they're set as admin
 15. **Ghost Mode: vault/devBuy/airdrop defaults point to tokenAdmin** — Ghost mode force-overrides all three to yourAddress
 16. **Ghost Mode: Rewards section locked in UI** — prevent manual edits that could break the validated config
+17. **`context.messageId` is required for indexing** — always set via `buildDeployContext()`; synthetic fallback if parser couldn't extract tweet ID / cast hash
+18. **`context.platform` must be a valid string** — 'twitter', 'farcaster', 'clanker', 'website', etc. Never 'x' (normalize to 'twitter'). Never empty.
+19. **`context.id` improves clanker.world matching** — set for twitter/farcaster when available (Twitter user numeric ID, Farcaster FID)
+20. **Pool tick alignment** — `pool.positions` must have at least one entry where `tickLower === tickIfToken0IsClanker`; auto-update when market cap slider changes
+21. **Static fees > 600 bps total** — token will deploy and index normally, but won't receive Blue Badge verification on clanker.world. Our 10% default is intentional.
+22. **Dynamic `maxFee` > 500 bps** — same as above; no Blue Badge but deploys fine
 
 ---
 
@@ -1046,11 +1175,12 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 - [ ] Test with Twitter avatar URL
 
 ### Phase 3 — Deploy Core
-- [ ] Content script parsers (twitter + farcaster + gmgn + generic)
+- [ ] Content script parsers (twitter + farcaster + gmgn + generic) — include messageId + userId extraction
 - [ ] `lib/symbol.ts`
 - [ ] `lib/ghost-validator.ts` — 7 assertions, throws on any misconfiguration
+- [ ] `lib/deploy-context-builder.ts` — builds `{ platform, messageId, id }` from ScrapedData
 - [ ] `lib/clanker.ts` — SDK wrapper with simulate support
-- [ ] `background/handlers/deploy.ts` — full flow + ghost validator before simulate
+- [ ] `background/handlers/deploy.ts` — full flow + ghost validator before simulate, context always set
 - [ ] Popup FormView (all sections) + ConfirmView (with Ghost fee routing panel) + PendingView + SuccessView
 - [ ] Wallet Mode A (injected) + wallet-bridge.ts with handshake
 - [ ] Ghost Deploy toggle in Advanced section + locked Rewards section in Ghost Mode
