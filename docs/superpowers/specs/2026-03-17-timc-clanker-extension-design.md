@@ -511,20 +511,170 @@ export function generateSymbol(input: string): string {
 
 ## Scraping Strategy
 
-| Parser | Target | Primary Source | Symbol Source |
-|---|---|---|---|
-| `twitter.ts` | twitter.com, x.com | `og:title` "Name (@handle)" | `@handle` |
-| `farcaster.ts` | warpcast.com | `og:title`, `og:description` | handle from URL |
-| `gmgn.ts` | gmgn.ai | token page DOM + meta | token ticker from page |
-| `generic.ts` | any site | `og:title`, `og:image`, `og:description` | first word of title |
+### Source Detection
 
-### Parser: gmgn.ts (gmgn.ai)
-GMGN token pages contain rich token metadata. Scrape:
-- Token name: `og:title` or `.token-name` DOM element
-- Ticker/symbol: DOM selector (`.token-symbol` or URL path segment)
-- Image: token logo from `og:image` or inline `<img>` near token name
-- Description: `og:description` or token bio section
-- Socials: scrape social links from token page (twitter, telegram, website buttons)
+`scraper.ts` selects the correct parser based on `location.hostname`:
+
+```typescript
+const PARSERS: Record<string, () => Promise<ScrapedData>> = {
+  'twitter.com':    parseTwitter,
+  'x.com':          parseTwitter,
+  'warpcast.com':   parseFarcaster,
+  'gmgn.ai':        parseGMGN,
+};
+
+export function detect(): () => Promise<ScrapedData> {
+  return PARSERS[location.hostname] ?? parseGeneric;
+}
+```
+
+### Parser Overview
+
+| Parser | Target | Method | Symbol Source | Chain Auto-detect |
+|---|---|---|---|---|
+| `twitter.ts` | twitter.com, x.com | OG meta (SSR) | `@handle` from og:title | No |
+| `farcaster.ts` | warpcast.com | OG meta (SSR) | handle from URL path | No |
+| `gmgn.ts` | gmgn.ai | DOM wait + OG (CSR) | ticker from DOM | **Yes** (from URL) |
+| `generic.ts` | any site | OG meta fallback | first word of og:title | No |
+
+---
+
+### Parser: twitter.ts (SSR — fast)
+Twitter/X is server-side rendered. OG meta is available immediately.
+- **Name**: parse `og:title` format `"Name (@handle)"` — extract both
+- **Symbol**: `generateSymbol(handle)` from `@handle`
+- **Image**: `og:image` (Twitter CDN high-res URL)
+- **Description**: `og:description` (bio text)
+- **Social**: current URL as twitter social
+
+---
+
+### Parser: farcaster.ts (SSR — fast)
+- **Name + Symbol**: `og:title` → parse handle from URL path (`/warpcast.com/username`)
+- **Image**: `og:image`
+- **Description**: `og:description`
+
+---
+
+### Parser: gmgn.ts (CSR — needs DOM wait)
+
+**Key fact**: GMGN is a React SPA (client-side rendered). Meta tags may be minimal on initial load. The content script must wait for the DOM to settle.
+
+**URL pattern**: `https://gmgn.ai/{chain}/token/{address}`
+- Supported chains: `sol`, `eth`, `base`, `bsc`, `trx`, `monad`
+- Chain is extractable from URL directly → **auto-set chain dropdown in popup**
+
+**Chain URL → chainId mapping**:
+```typescript
+const GMGN_CHAIN_MAP: Record<string, number | null> = {
+  base: 8453,
+  eth:  1,
+  sol:  null,   // not supported by Clanker, show warning
+  bsc:  null,   // not in SDK
+  trx:  null,
+  monad: 143,
+};
+```
+
+**Scraping approach** (content script, runs inside browser):
+```typescript
+// content/parsers/gmgn.ts
+export async function parseGMGN(): Promise<ScrapedData> {
+  // 1. Extract chain + address from URL immediately
+  const [, chain, , address] = location.pathname.split('/');
+  const chainId = GMGN_CHAIN_MAP[chain] ?? null;
+
+  // 2. Wait for DOM to load token content (CSR — up to 5s)
+  await waitForElement('[class*="token"], h1, [data-testid]', 5000);
+
+  // 3. Try OG meta first (sometimes populated by SSR prefetch)
+  const ogTitle = document.querySelector('meta[property="og:title"]')?.getAttribute('content') ?? '';
+  const ogImage = document.querySelector('meta[property="og:image"]')?.getAttribute('content') ?? '';
+  const ogDesc  = document.querySelector('meta[property="og:description"]')?.getAttribute('content') ?? '';
+
+  // 4. Fallback: parse from DOM
+  // Token name: first <h1> or element with token name pattern
+  const name = ogTitle || document.querySelector('h1')?.textContent?.trim() || '';
+
+  // 5. Symbol: find ticker — look for "$TICKER" pattern in page text
+  const symbolMatch = document.body.innerText.match(/\$([A-Z0-9]{1,8})\b/);
+  const symbol = symbolMatch?.[1] ?? generateSymbol(name);
+
+  // 6. Social links: find <a> tags pointing to known social domains
+  const links = Array.from(document.querySelectorAll('a[href]'))
+    .map(a => (a as HTMLAnchorElement).href);
+  const twitter  = links.find(h => h.includes('twitter.com') || h.includes('x.com'));
+  const telegram = links.find(h => h.includes('t.me'));
+  const website  = links.find(h => !h.includes('gmgn.ai') && h.startsWith('https://') && !twitter && !telegram);
+
+  return {
+    name,
+    symbol,
+    description: ogDesc,
+    imageUrl: ogImage,
+    socials: { twitter, telegram, website },
+    detectedChainId: chainId,  // extra field — popup uses this to pre-select chain
+  };
+}
+```
+
+**`waitForElement` helper** (content scripts only):
+```typescript
+function waitForElement(selector: string, timeoutMs: number): Promise<Element | null> {
+  return new Promise(resolve => {
+    const el = document.querySelector(selector);
+    if (el) { resolve(el); return; }
+    const observer = new MutationObserver(() => {
+      const found = document.querySelector(selector);
+      if (found) { observer.disconnect(); resolve(found); }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(() => { observer.disconnect(); resolve(null); }, timeoutMs);
+  });
+}
+```
+
+**Note on selectors**: GMGN uses dynamically generated class names (minified CSS). Use **structural selectors** (`h1`, `a[href*="twitter"]`, `$TICKER` text pattern) rather than class names. Actual selectors should be verified with DevTools before Phase 3 implementation.
+
+---
+
+### UX: Auto-fill Feedback
+
+Popup shows scrape source + confidence indicator:
+
+```
+┌────────────────────────────────────┐
+│  🟢 Scraped from GMGN (base)       │  ← source badge
+│  ⚡ Chain auto-set to Base          │  ← if detectedChainId present
+│  [img] Name: Bonk      Symbol: $BONK│
+│  ↻ Re-scrape                        │  ← refresh button if incomplete
+└────────────────────────────────────┘
+```
+
+Rules:
+- If `detectedChainId` comes back from GMGN scraper → auto-set chain dropdown, show info toast
+- If chain from GMGN URL not supported by Clanker SDK → show warning: *"[chain] not supported. Please select a chain manually."*
+- Empty fields highlighted in yellow — user can fill manually
+- "Re-scrape" button re-runs parser (useful for CSR pages still loading)
+
+---
+
+### Extended ScrapedData Type
+
+```typescript
+interface ScrapedData {
+  name: string;
+  symbol: string;
+  description?: string;
+  imageUrl?: string;
+  socials: {
+    twitter?: string;
+    telegram?: string;
+    website?: string;
+  };
+  detectedChainId?: number | null;  // GMGN only — auto-select chain
+  source?: 'twitter' | 'farcaster' | 'gmgn' | 'generic';
+}
 
 All parsers return:
 ```typescript
