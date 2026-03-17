@@ -245,7 +245,12 @@ interface ExtensionConfig {
 
   // DEFAULT DEPLOY SETTINGS
   defaultChain: number;               // chainId
-  defaultFeePreset: 'StaticBasic' | 'DynamicBasic' | 'Dynamic3' | 'Custom';
+  defaultFeePreset: 'Static10' | 'DynamicDefault' | 'DynamicBasic' | 'Dynamic3' | 'Custom';
+  // Static10 = clankerFee: 1000, pairedFee: 1000 (10% each) ← default
+  // DynamicDefault = baseFee: 100, maxFee: 1000 (1%–10%) ← user default for dynamic
+  defaultStaticFeeBps: number;       // default: 1000 (10%), applies to both clankerFee + pairedFee
+  defaultDynamicBaseBps: number;     // default: 100 (1%)
+  defaultDynamicMaxBps: number;      // default: 1000 (10%)
   defaultPoolPreset: 'Standard' | 'Project' | 'TwentyETH';
   defaultPairedToken: 'WETH' | `0x${string}`;
   defaultMarketCap: number;           // in ETH/native unit
@@ -304,9 +309,42 @@ Scraped automatically, all editable:
 - **Starting Market Cap**: slider → translates to `tickIfToken0IsClanker`
 
 ### Section 3 — Fee Configuration (collapsed)
-- Preset chips: `Static 1%` / `DynamicBasic` / `Dynamic3` / `Custom`
-- Static mode: clankerFee bps + pairedFee bps (0–2000)
-- Dynamic mode: baseFee + maxFee + `[Advanced ▾]` toggle for full params
+
+**Default fee type: Static 10%**
+
+#### Static Mode
+- **Default**: `clankerFee = 1000 bps (10%)`, `pairedFee = 1000 bps (10%)`
+- Both fields fully editable, range 0–2000 bps (0–20%)
+- Displayed as `%` in UI — convert to/from bps internally (`% × 100`)
+- Preset chips for quick selection:
+  - `1%` → 100/100 bps
+  - `5%` → 500/500 bps
+  - `10%` ← **default** → 1000/1000 bps
+  - `Custom` → manual input
+
+#### Dynamic Mode
+- **Default**: `baseFee = 100 bps (1%)`, `maxFee = 1000 bps (10%)`
+- Fee fluctuates between baseFee and maxFee based on volatility
+- Displayed as range: `"1% → 10%"`
+- baseFee range: 0.25%–20% (25–2000 bps, SDK minimum = 25)
+- maxFee range: 0%–30% (0–3000 bps)
+- Constraint: `maxFee > baseFee` — validate before deploy
+- `[Advanced ▾]` toggle exposes full dynamic params:
+  - `referenceTickFilterPeriod` (seconds, default 30)
+  - `resetPeriod` (seconds, default 120)
+  - `resetTickFilter` (bps, default 200)
+  - `feeControlNumerator` (default 500,000,000)
+  - `decayFilterBps` (default 7500 = 75%)
+- Preset chips:
+  - `1%–10%` ← **default** → baseFee 100, maxFee 1000, DynamicBasic params
+  - `1%–5%` → DynamicBasic preset from SDK
+  - `1%–3%` → Dynamic3 preset from SDK
+  - `Custom` → manual input
+
+#### Fee Type Toggle
+- Radio: `Static` | `Dynamic`
+- **Default selection: Static**
+- If chain = Ethereum Mainnet → Dynamic option greyed out (hook = 0x0 on mainnet)
 
 ### Section 4 — Sniper Protection (collapsed, v4.1+)
 - Starting fee %, Ending fee %, Decay duration (seconds)
