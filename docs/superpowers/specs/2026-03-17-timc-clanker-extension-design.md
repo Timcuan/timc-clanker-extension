@@ -26,18 +26,23 @@ A Chrome/Brave browser extension (Manifest V3) that scrapes token metadata from 
 
 ## Supported Chains
 
-SDK v4 supported chains only (BNB Chain not in SDK — dropped):
+SDK v4 supported chains only (BNB Chain not in SDK — dropped, Abstract only v3.1 — excluded):
 
 | Chain | ChainId | Notes |
 |---|---|---|
-| Base | 8453 | v4.1, primary chain |
-| Ethereum Mainnet | 1 | v4.1 |
-| Arbitrum | 42161 | v4 |
-| Unichain | 1301 | v4 |
-| Abstract | 2741 | v4 |
-| Monad | custom | v4 |
+| Base | 8453 | v4.1 — full feature set, primary chain |
+| Ethereum Mainnet | 1 | v4.1 — **no dynamic fees** (hook = 0x0), presale supported |
+| Arbitrum | 42161 | v4 — no mevModuleV2, no V2 hooks |
+| Unichain | **130** | v4 — no V2 hooks |
+| Monad | **143** | v4.1 — only V2 hooks (static V1 = 0x0), RPC TBD |
 
-Chain config is derived directly from `clankerConfigFor()` in the SDK — no hardcoded factory addresses needed.
+**Corrections from original spec:**
+- Unichain chain ID is **130** (not 1301)
+- Abstract (2741) is only in clanker v3.1, **not v4** — excluded
+- Monad chain ID is **143** (custom viem chain definition)
+- Ethereum Mainnet: feeDynamicHook = 0x0 — UI must disable dynamic fee option for this chain
+
+Chain config is derived directly from `clankerConfigFor()` in the SDK — no hardcoded factory addresses needed. The UI must check if `related.feeStaticHook` or `related.feeDynamicHook` is zero address and disable those options per chain.
 
 ---
 
@@ -567,7 +572,7 @@ import { defineConfig } from 'wxt';
 
 export default defineConfig({
   extensionApi: 'chrome',
-  modules: ['@wxt-dev/module-react'],
+  modules: ['@wxt-dev/module-preact'],  // @wxt-dev/module-preact, NOT module-react
   manifest: {
     name: 'Clanker Token Deployer',
     version: '1.0.0',
@@ -602,7 +607,7 @@ export default defineConfig({
   },
   "devDependencies": {
     "wxt": "latest",
-    "@wxt-dev/module-react": "latest",
+    "@wxt-dev/module-preact": "latest",
     "@types/chrome": "latest",
     "typescript": "^5.3.0"
   }
@@ -672,6 +677,21 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 - [ ] End-to-end test on Base mainnet
 
 ---
+
+## Error Handling & Edge Cases
+
+| Scenario | Handling |
+|---|---|
+| Pinata upload fails | Show error in FormView with retry button; block deploy |
+| All RPCs fail for chain | Show "Network unavailable" error; suggest switching chain |
+| User rejects wallet tx | Return to FormView with "Transaction rejected" toast |
+| deploySimulate() reverts | Show revert reason before sign prompt; block deploy |
+| Image URL unreachable | Warn user, allow proceeding with no image (empty ipfs) |
+| BPS sum ≠ 10,000 | DEPLOY button disabled, live error under rewards section |
+| SW killed mid-deploy | On popup reopen: check pending txHash in storage, show recovery view |
+| Pinata key invalid/expired | Show config error pointing to Options → Image section |
+| Dynamic fee on mainnet | Fee type forced to Static; dynamic option greyed out |
+| Monad RPC = "TODO" | Show chain warning banner; user must provide custom RPC in options |
 
 ## TODO Before Coding
 
