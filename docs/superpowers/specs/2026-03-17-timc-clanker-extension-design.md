@@ -105,6 +105,7 @@ timc-clanker-extension/
 │       ├── image-pipeline.ts            # Fetch → cache check → Pinata upload → ipfs://CID
 │       ├── pinata.ts                    # Pinata pinFileToIPFS wrapper
 │       ├── symbol.ts                    # Auto-generate symbol from handle/name
+│       ├── ghost-validator.ts           # Ghost Deploy Mode safety checks (7 assertions)
 │       └── templates.ts                 # Save/load deploy config templates
 │
 └── public/
@@ -347,6 +348,161 @@ Each extension is a toggle. Expands when enabled:
 - Custom salt (hex, optional)
 - tokenAdmin override (defaults to options setting)
 - Simulate before deploy toggle (default: on)
+- **Ghost Deploy toggle** — see Ghost Deploy Mode section below
+
+---
+
+## Ghost Deploy Mode
+
+Deploys a token where `tokenAdmin` is a target address (appears as creator on clanker.world), while reward fees are routed to the user's own address.
+
+### Concept
+
+```
+tokenAdmin  = targetAddress    ← appears as token creator, can update metadata
+rewardSlot1 = { admin: yourAddress, recipient: targetAddress, bps: 100  }  ← 1%
+rewardSlot2 = { admin: yourAddress, recipient: yourAddress,   bps: 9900 }  ← 99%
+```
+
+**You are `admin` on both reward slots** — meaning only you can change who receives fees. The target cannot reroute fees to themselves.
+
+---
+
+### Risk Vectors & Mitigations
+
+| Risk | What happens | Mitigation |
+|---|---|---|
+| `rewards` not set | SDK fallback: 100% to `tokenAdmin` (target) | Ghost mode ALWAYS explicitly sets `rewards` — never leaves undefined |
+| `admin: targetAddress` in any slot | Target can call `updateRewardRecipient()` → steal fees | Ghost validator asserts ALL `admin` fields = `yourAddress` |
+| `vault.recipient` defaults to `tokenAdmin` | Vault tokens go to target | Ghost mode force-sets `vault.recipient = yourAddress` |
+| `devBuy.recipient` defaults to `tokenAdmin` | Dev buy tokens go to target | Ghost mode force-sets `devBuy.recipient = yourAddress` |
+| `airdrop.admin` defaults to `tokenAdmin` | Target controls airdrop | Ghost mode force-sets `airdrop.admin = yourAddress` |
+| `yourAddress` not configured in Options | Wrong address used | Ghost mode blocked if `walletMode` + address not set in Options |
+
+---
+
+### Ghost Validator (`lib/ghost-validator.ts`)
+
+Runs before deploy in Ghost Mode. Throws descriptive errors if misconfigured:
+
+```typescript
+export function validateGhostConfig(
+  config: ClankerTokenV4,
+  yourAddress: `0x${string}`,
+  targetAddress: `0x${string}`
+): void {
+  // 1. rewards must be explicitly present
+  if (!config.rewards) {
+    throw new Error('GHOST: rewards must be explicitly set — SDK default sends 100% to tokenAdmin');
+  }
+
+  // 2. ALL reward admin fields must be yourAddress
+  for (const r of config.rewards.recipients) {
+    if (r.admin.toLowerCase() !== yourAddress.toLowerCase()) {
+      throw new Error(
+        `GHOST: reward slot admin must be your address (${yourAddress}), got ${r.admin}`
+      );
+    }
+  }
+
+  // 3. bps sum must be 10,000
+  const bpsSum = config.rewards.recipients.reduce((s, r) => s + r.bps, 0);
+  if (bpsSum !== 10_000) {
+    throw new Error(`GHOST: reward bps must sum to 10000, got ${bpsSum}`);
+  }
+
+  // 4. verify your expected share
+  const yourBps = config.rewards.recipients
+    .filter(r => r.recipient.toLowerCase() === yourAddress.toLowerCase())
+    .reduce((s, r) => s + r.bps, 0);
+  if (yourBps === 0) {
+    throw new Error('GHOST: your address has 0 bps — you will receive no fees');
+  }
+
+  // 5. vault recipient must not be tokenAdmin (target)
+  if (config.vault && (!config.vault.recipient ||
+      config.vault.recipient.toLowerCase() === targetAddress.toLowerCase())) {
+    throw new Error('GHOST: vault.recipient must be your address, not tokenAdmin');
+  }
+
+  // 6. devBuy recipient must not be tokenAdmin (target)
+  if (config.devBuy && (!config.devBuy.recipient ||
+      config.devBuy.recipient.toLowerCase() === targetAddress.toLowerCase())) {
+    throw new Error('GHOST: devBuy.recipient must be your address, not tokenAdmin');
+  }
+
+  // 7. airdrop admin must not be tokenAdmin (target)
+  if (config.airdrop && (!config.airdrop.admin ||
+      config.airdrop.admin.toLowerCase() === targetAddress.toLowerCase())) {
+    throw new Error('GHOST: airdrop.admin must be your address, not tokenAdmin');
+  }
+}
+```
+
+This runs BEFORE `deploySimulate()` in `handlers/deploy.ts`. If any check fails, the popup gets an error and deploy is blocked.
+
+---
+
+### Ghost Mode UI Flow
+
+**Advanced Section toggle:**
+```
+☑ Ghost Deploy
+  Token Admin (appears as creator):  [0x...target    ] [paste]
+  Your reward share:                  [99] % to [0x...you (auto)]
+  Target's share:                     [1 ] % to tokenAdmin
+```
+
+- "Your address" is read from Options wallet config — not editable in this field
+- Reward % is adjustable (default 99/1)
+- Only `Both` token type used (WETH + token fees)
+
+**Auto-configuration in Ghost Mode:**
+When Ghost Mode is toggled ON, the extension automatically:
+1. Sets `tokenAdmin = targetAddress`
+2. Builds `rewards.recipients` with correct admin/recipient split
+3. Overrides `vault.recipient = yourAddress` (if vault enabled)
+4. Overrides `devBuy.recipient = yourAddress` (if devBuy enabled)
+5. Overrides `airdrop.admin = yourAddress` (if airdrop enabled)
+
+The Rewards section (Section 6) is **locked** in Ghost Mode — user cannot manually edit reward slots. This prevents accidental misconfiguration.
+
+---
+
+### ConfirmView in Ghost Mode
+
+Shows an explicit "Fee Routing" panel before signing:
+
+```
+┌─────────────────────────────────────────┐
+│  ⚠️  GHOST DEPLOY MODE                  │
+│                                         │
+│  Token appears created by:              │
+│  0x...target   [copy]                   │
+│                                         │
+│  Fee Routing (WETH + Token):            │
+│  99% → 0x...you  [YOU]      ✅           │
+│   1% → 0x...target [target]             │
+│                                         │
+│  You control all reward slots           │
+│  (admin: 0x...you on both)   ✅          │
+│                                         │
+│  Vault recipient: 0x...you   ✅          │
+│                                         │
+│  ✅ Ghost validator passed              │
+└─────────────────────────────────────────┘
+```
+
+All green checkmarks must be present before "Confirm & Sign" is enabled.
+
+---
+
+### Claiming Fees in Ghost Mode
+
+In HistoryView, Ghost Deploy tokens show:
+- "**Your fees** (99%): ~0.042 ETH available [Claim]"
+- Extension calls `claimRewards({ token, rewardRecipient: yourAddress })`
+- The 1% slot for targetAddress is their responsibility to claim — extension does not claim on their behalf
 
 ---
 
@@ -826,6 +982,10 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 10. **SDK chain config via `clankerConfigFor()`** — do not hardcode factory addresses
 11. **Wallet bridge handshake** — WALLET_PING before WALLET_REQUEST to avoid race condition
 12. **Image cache** — hash URL → ipfs:// to avoid duplicate Pinata uploads
+13. **Ghost Mode: rewards must always be explicit** — SDK fallback sends 100% to tokenAdmin; never omit rewards in Ghost Mode
+14. **Ghost Mode: ALL reward slot `admin` must be yourAddress** — target can hijack slots if they're set as admin
+15. **Ghost Mode: vault/devBuy/airdrop defaults point to tokenAdmin** — Ghost mode force-overrides all three to yourAddress
+16. **Ghost Mode: Rewards section locked in UI** — prevent manual edits that could break the validated config
 
 ---
 
@@ -848,12 +1008,14 @@ SDK must be built before `npm install`: `cd "../ClankerSDK 2026" && bun run buil
 - [ ] Test with Twitter avatar URL
 
 ### Phase 3 — Deploy Core
-- [ ] Content script parsers (twitter + farcaster + generic)
+- [ ] Content script parsers (twitter + farcaster + gmgn + generic)
 - [ ] `lib/symbol.ts`
+- [ ] `lib/ghost-validator.ts` — 7 assertions, throws on any misconfiguration
 - [ ] `lib/clanker.ts` — SDK wrapper with simulate support
-- [ ] `background/handlers/deploy.ts` — full flow
-- [ ] Popup FormView (all sections) + ConfirmView + PendingView + SuccessView
+- [ ] `background/handlers/deploy.ts` — full flow + ghost validator before simulate
+- [ ] Popup FormView (all sections) + ConfirmView (with Ghost fee routing panel) + PendingView + SuccessView
 - [ ] Wallet Mode A (injected) + wallet-bridge.ts with handshake
+- [ ] Ghost Deploy toggle in Advanced section + locked Rewards section in Ghost Mode
 
 ### Phase 4 — History + Fees
 - [ ] `background/handlers/history.ts` — local + API merge
