@@ -22,14 +22,18 @@ export async function handleDeploy(
   let walletId: string;
   let nextRotationIndex = config.rotationIndex;
   if (config.walletMode === 'vault') {
-    const { walletId: selected, nextIndex } = selectNextWallet(
-      config.vaultEntries,
-      config.rotationMode,
-      config.rotationIndex,
-      requestedWalletId ?? config.activeWalletId
-    );
-    walletId = selected;
-    nextRotationIndex = nextIndex;
+    if (requestedWalletId && config.vaultEntries.find(e => e.id === requestedWalletId && e.active)) {
+      walletId = requestedWalletId;
+    } else {
+      const { walletId: selected, nextIndex } = selectNextWallet(
+        config.vaultEntries,
+        config.rotationMode,
+        config.rotationIndex,
+        config.activeWalletId
+      );
+      walletId = selected;
+      nextRotationIndex = nextIndex;
+    }
   } else {
     walletId = requestedWalletId ?? '';
   }
@@ -152,14 +156,14 @@ export async function handleDeploy(
     } : {}),
     ...(form.devBuyEnabled ? {
       devBuy: {
-        ethAmount: parseFloat(form.devBuyAmount),
+        ethAmount: parseFloat(form.devBuyAmount) || 0,
         recipient: form.devBuyRecipient || undefined,
       }
     } : {}),
     ...(form.airdropEnabled && form.airdropMerkleRoot ? {
       airdrop: {
         merkleRoot: form.airdropMerkleRoot as `0x${string}`,
-        amount: parseFloat(form.airdropAmount),
+        amount: parseFloat(form.airdropAmount) || 0,
         lockupDuration: form.airdropLockupDays * 86400,
         vestingDuration: form.airdropVestingDays > 0 ? form.airdropVestingDays * 86400 : 0,
         admin: rewardRecipient,

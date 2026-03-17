@@ -7,6 +7,13 @@ export function validateGhostConfig(
     throw new Error('GHOST: rewards must be explicitly set — SDK default sends 100% to tokenAdmin');
   }
 
+  // Verify tokenAdmin matches the ghost target — if they diverge, fees will go to wrong address
+  if (config.tokenAdmin && config.tokenAdmin.toLowerCase() !== targetAddress.toLowerCase()) {
+    throw new Error(
+      `GHOST: tokenAdmin (${config.tokenAdmin}) does not match ghost target (${targetAddress})`
+    );
+  }
+
   for (const r of config.rewards.recipients) {
     if (r.admin.toLowerCase() !== yourAddress.toLowerCase()) {
       throw new Error(

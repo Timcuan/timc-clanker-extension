@@ -1,8 +1,9 @@
 // src/background/crypto.ts
 // Uses Web Crypto API (available in MV3 service workers and Node 18+)
 
-function b64encode(buf: ArrayBuffer): string {
-  return btoa(String.fromCharCode(...new Uint8Array(buf)));
+function b64encode(buf: ArrayBuffer | Uint8Array): string {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  return btoa(String.fromCharCode(...bytes));
 }
 
 function b64decode(str: string): Uint8Array {

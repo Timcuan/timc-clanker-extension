@@ -67,7 +67,8 @@ export const CHAIN_CONFIG: Record<number, {
   },
 };
 
-const rpcCache = new Map<number, string>();
+const rpcCache = new Map<number, { url: string; expiresAt: number }>();
+const RPC_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 async function probeRpc(url: string, chain: Chain, timeoutMs = 3000): Promise<boolean> {
   try {
@@ -88,7 +89,7 @@ export async function getCustomRpc(chainId: number): Promise<string | null> {
 }
 
 export async function getBestRpc(chainId: number): Promise<string> {
-  if (rpcCache.has(chainId)) return rpcCache.get(chainId)!;
+  const cached = rpcCache.get(chainId); if (cached && cached.expiresAt > Date.now()) return cached.url;
   const config = CHAIN_CONFIG[chainId];
   if (!config) throw new Error(`Unsupported chain: ${chainId}`);
 
@@ -97,7 +98,7 @@ export async function getBestRpc(chainId: number): Promise<string> {
     const customRpc = await getCustomRpc(chainId);
     if (!customRpc) throw new Error(`${config.name} requires a custom RPC — configure it in Options → Deploy Defaults`);
     if (await probeRpc(customRpc, config.viemChain)) {
-      rpcCache.set(chainId, customRpc);
+      rpcCache.set(chainId, { url: customRpc, expiresAt: Date.now() + RPC_CACHE_TTL_MS });
       return customRpc;
     }
     throw new Error(`Custom RPC for ${config.name} is unreachable: ${customRpc}`);
@@ -105,7 +106,7 @@ export async function getBestRpc(chainId: number): Promise<string> {
 
   for (const rpc of config.rpcs) {
     if (await probeRpc(rpc, config.viemChain)) {
-      rpcCache.set(chainId, rpc);
+      rpcCache.set(chainId, { url: rpc, expiresAt: Date.now() + RPC_CACHE_TTL_MS });
       return rpc;
     }
   }
