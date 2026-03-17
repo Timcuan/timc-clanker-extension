@@ -71,18 +71,21 @@ describe('extractCastHash', () => {
 });
 ```
 
-- [ ] **Step 2: Update vitest.config.ts to use jsdom for dom tests**
+- [ ] **Step 2: Update vitest.config.ts to add jsdom for dom tests (merge, don't overwrite)**
+
+Edit `vitest.config.ts` — add `environmentMatchGlobs` while keeping `environment: 'node'` and `include`:
 
 ```typescript
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    environment: 'node',
     include: ['src/**/__tests__/**/*.test.ts'],
     environmentMatchGlobs: [
+      // DOM tests need jsdom — add any additional DOM test files here
       ['src/lib/__tests__/dom-helpers.test.ts', 'jsdom'],
     ],
-    environment: 'node',
   },
 });
 ```

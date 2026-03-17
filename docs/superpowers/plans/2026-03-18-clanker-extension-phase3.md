@@ -412,12 +412,28 @@ export function App() {
 
   async function onConfirm() {
     setState(prev => ({ ...prev, view: 'pending', deployError: undefined }));
+
+    // Deploy is split into two phases so PendingView can show txHash while waiting for confirmation.
+    // Phase A: DEPLOY message → returns txHash immediately after broadcast
+    // Phase B: WAIT_DEPLOY message with txHash → polls until confirmed, returns tokenAddress
+    // Note: background/handlers/deploy.ts must be split to support this pattern.
+    // Simpler alternative (Phase 3 implementation): use a single DEPLOY message but have
+    // the SW send the txHash via a DEPLOY_TX_HASH chrome.runtime.sendMessage back to popup
+    // before calling waitForTransaction. For now: use single-message approach but store
+    // txHash in state as soon as it arrives via a polling mechanism.
+    //
+    // IMPLEMENTATION NOTE: The simplest correct approach for Phase 3 is to use a Port API
+    // for deploy (like batch), sending DEPLOY_PROGRESS events. However to keep Phase 3 simpler,
+    // we use the single sendMessage approach and accept that txHash is only shown in SuccessView.
+    // The PendingView shows the spinner + "may take 60s". This is a known UX simplification.
+    // A future enhancement can split this into a Port-based flow.
+
     const res = await bgSend({
       type: 'DEPLOY',
       payload: { form: state.form, scraped: state.scraped },
     });
     if ('error' in res) {
-      setState(prev => ({ ...prev, view: 'form', deployError: res.error }));
+      setState(prev => ({ ...prev, view: 'form', deployError: (res as any).error }));
       return;
     }
     const { txHash, tokenAddress } = res as { txHash: `0x${string}`; tokenAddress: `0x${string}` };
@@ -1105,11 +1121,22 @@ export function FormView({ form, scraped, imageStatus, imageError, deployError, 
                 <input type="number" min={1} max={99} value={form.ghostYourShareBps / 100}
                   onInput={e => {
                     const pct = Math.min(99, Math.max(1, +e.currentTarget.value));
+                    // Ghost Mode reward slots: admin MUST be yourAddress (the deploying wallet),
+                    // NOT form.tokenAdmin (which in Ghost Mode IS the target address).
+                    // In vault mode, yourAddress = the vault wallet's account.address.
+                    // We use form.tokenAdmin here as a fallback display value for the non-ghost
+                    // identity address — but the actual admin enforcement happens in ghost-validator.ts
+                    // and deploy.ts uses rewardRecipient (vault wallet address) as admin.
+                    // The UI preview uses config.tokenAdmin as a placeholder — deploy.ts overrides.
+                    const yourAddr = form.tokenAdmin; // Options identity address (fee recipient)
+                    const targetAddr = (form.ghostTargetAddress as `0x${string}`) || '0x0000000000000000000000000000000000000000';
                     onFormChange({
                       ghostYourShareBps: pct * 100,
                       rewards: [
-                        { admin: form.tokenAdmin, recipient: form.tokenAdmin, bps: pct * 100, token: 'Both' },
-                        { admin: form.tokenAdmin, recipient: form.ghostTargetAddress as `0x${string}` || '0x0000000000000000000000000000000000000000', bps: (100 - pct) * 100, token: 'Both' },
+                        // admin = yourAddr (you control this slot — you receive fees)
+                        { admin: yourAddr, recipient: yourAddr, bps: pct * 100, token: 'Both' },
+                        // admin = yourAddr (you still control target's slot — they can't reroute)
+                        { admin: yourAddr, recipient: targetAddr, bps: (100 - pct) * 100, token: 'Both' },
                       ],
                     });
                   }} />
@@ -1496,16 +1523,13 @@ export function WalletSection() {
     if (!newName || !newPk || !addPassword) { setError('Name, private key, and password required'); return; }
     setSaving(true); setError('');
     try {
-      const { encryptPrivateKey } = await import('../../background/crypto.js');
-      const { encryptedPK, iv, salt } = await encryptPrivateKey(newPk, addPassword);
-      const account = privateKeyToAccount(newPk as `0x${string}`);
-      const entry: WalletVaultEntry = {
-        id: crypto.randomUUID(), name: newName, address: account.address,
-        encryptedPK, iv, salt, createdAt: Date.now(), lastUsedAt: 0, deployCount: 0, active: true,
-      };
-      const updated = [...entries, entry];
-      await storage.set({ vaultEntries: updated });
-      setEntries(updated);
+      // Encryption happens in the service worker (ADD_WALLET message) so plaintext PK
+      // never exists in popup heap beyond this function call. (Security: Gotcha #1 analogue)
+      const res = await chrome.runtime.sendMessage({ type: 'ADD_WALLET', name: newName, plainPk: newPk, password: addPassword });
+      if (res?.error) throw new Error(res.error);
+      // Reload vault entries from storage (SW updated them)
+      const config = await storage.get();
+      setEntries(config.vaultEntries);
       setNewName(''); setNewPk(''); setNewAddr(''); setAddPassword('');
     } catch (e) { setError((e as Error).message); }
     setSaving(false);
@@ -1738,15 +1762,135 @@ export function ImageSection() {
 }
 ```
 
-- [ ] **Step 5: Create src/options/Options.tsx**
+- [ ] **Step 5: Create src/options/sections/RewardsDefaultSection.tsx** (default rewards template)
+
+```tsx
+import { useState, useEffect } from 'preact/hooks';
+import { storage } from '../../lib/storage.js';
+
+type RewardEntry = { admin: `0x${string}`; recipient: `0x${string}`; bps: number; token: 'Both' | 'Clanker' | 'Paired' };
+
+export function RewardsDefaultSection() {
+  const [rewards, setRewards] = useState<RewardEntry[]>([]);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => { storage.get().then(c => setRewards(c.defaultRewards as RewardEntry[])); }, []);
+
+  const totalBps = rewards.reduce((s, r) => s + r.bps, 0);
+  const valid = totalBps === 10000 || rewards.length === 0;
+
+  function update(i: number, patch: Partial<RewardEntry>) {
+    setRewards(prev => prev.map((r, idx) => idx === i ? { ...r, ...patch } : r));
+  }
+
+  async function save() {
+    await storage.set({ defaultRewards: rewards as any });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
+
+  return (
+    <div>
+      <div class="section-title">Default Rewards Template</div>
+      <p style={{ color: 'var(--text-dim)', fontSize: '12px', marginBottom: '12px' }}>
+        Applied to all new deploys. Leave empty to use single-recipient default (100% to tokenAdmin).
+      </p>
+      {rewards.map((r, i) => (
+        <div key={i} style={{ padding: '8px', background: 'var(--bg2)', borderRadius: 'var(--radius-sm)', marginBottom: '8px' }}>
+          <div class="field-row">
+            <div class="field" style={{ flex: 2 }}>
+              <label>Recipient</label>
+              <input value={r.recipient} onInput={e => update(i, { recipient: e.currentTarget.value as `0x${string}` })} />
+            </div>
+            <div class="field">
+              <label>BPS</label>
+              <input type="number" min={0} max={10000} value={r.bps} onInput={e => update(i, { bps: +e.currentTarget.value })} />
+            </div>
+            <button class="btn btn-danger btn-sm" style={{ alignSelf: 'flex-end', marginBottom: '10px' }}
+              onClick={() => setRewards(prev => prev.filter((_, idx) => idx !== i))}>✕</button>
+          </div>
+          <div class="field-row">
+            <div class="field" style={{ flex: 2 }}>
+              <label>Admin (controller)</label>
+              <input value={r.admin} onInput={e => update(i, { admin: e.currentTarget.value as `0x${string}` })} />
+            </div>
+            <div class="field">
+              <label>Token</label>
+              <select value={r.token} onChange={e => update(i, { token: e.currentTarget.value as any })}>
+                <option>Both</option><option>Clanker</option><option>Paired</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      ))}
+      {rewards.length < 7 && (
+        <button class="btn btn-secondary btn-sm" onClick={() => setRewards(prev => [...prev, { admin: '' as any, recipient: '' as any, bps: 0, token: 'Both' }])}>+ Add</button>
+      )}
+      {!valid && <p style={{ color: 'var(--red)', fontSize: '12px', marginTop: '8px' }}>BPS must sum to 10000 (currently {totalBps})</p>}
+      <button class="btn btn-primary save-btn" onClick={save} disabled={!valid}>
+        {saved ? '✓ Saved' : 'Save Default Rewards'}
+      </button>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 6: Create src/options/sections/TemplatesSection.tsx**
+
+```tsx
+import { useState, useEffect } from 'preact/hooks';
+import { listTemplates, deleteTemplate } from '../../lib/templates.js';
+
+export function TemplatesSection() {
+  const [templates, setTemplates] = useState<Awaited<ReturnType<typeof listTemplates>>>([]);
+
+  useEffect(() => { listTemplates().then(setTemplates); }, []);
+
+  async function remove(id: string) {
+    await deleteTemplate(id);
+    setTemplates(prev => prev.filter(t => t.id !== id));
+  }
+
+  return (
+    <div>
+      <div class="section-title">Deploy Templates</div>
+      <p style={{ color: 'var(--text-dim)', fontSize: '12px', marginBottom: '12px' }}>
+        Templates are saved from the popup using the 💾 button. Load them from the popup form.
+      </p>
+      {templates.length === 0 && <p style={{ color: 'var(--text-dim)' }}>No saved templates</p>}
+      {templates.map(t => (
+        <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+          <div>
+            <div style={{ fontWeight: 600 }}>{t.name}</div>
+            <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>{new Date(t.createdAt).toLocaleDateString()}</div>
+          </div>
+          <button class="btn btn-danger btn-sm" onClick={() => remove(t.id)}>Delete</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+- [ ] **Step 7: Create src/options/Options.tsx** (all 5 tabs)
 
 ```tsx
 import { useState } from 'preact/hooks';
 import { WalletSection } from './sections/WalletSection.js';
 import { DeploySection } from './sections/DeploySection.js';
 import { ImageSection } from './sections/ImageSection.js';
+import { RewardsDefaultSection } from './sections/RewardsDefaultSection.js';
+import { TemplatesSection } from './sections/TemplatesSection.js';
 
-type Tab = 'wallet' | 'deploy' | 'image';
+type Tab = 'wallet' | 'deploy' | 'rewards' | 'image' | 'templates';
+
+const TAB_LABELS: Record<Tab, string> = {
+  wallet: '🔑 Wallets',
+  deploy: '⚙ Deploy',
+  rewards: '💰 Rewards',
+  image: '🖼 Image',
+  templates: '📋 Templates',
+};
 
 export function Options() {
   const [tab, setTab] = useState<Tab>('wallet');
@@ -1757,21 +1901,23 @@ export function Options() {
         🔷 Clanker Extension Settings
       </h1>
       <div class="tabs">
-        {(['wallet', 'deploy', 'image'] as Tab[]).map(t => (
+        {(Object.keys(TAB_LABELS) as Tab[]).map(t => (
           <button class={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
-            {{ wallet: '🔑 Wallet Vault', deploy: '⚙ Deploy Defaults', image: '🖼 Image / IPFS' }[t]}
+            {TAB_LABELS[t]}
           </button>
         ))}
       </div>
-      {tab === 'wallet' && <WalletSection />}
-      {tab === 'deploy' && <DeploySection />}
-      {tab === 'image' && <ImageSection />}
+      {tab === 'wallet'    && <WalletSection />}
+      {tab === 'deploy'    && <DeploySection />}
+      {tab === 'rewards'   && <RewardsDefaultSection />}
+      {tab === 'image'     && <ImageSection />}
+      {tab === 'templates' && <TemplatesSection />}
     </div>
   );
 }
 ```
 
-- [ ] **Step 6: Update src/options/index.tsx**
+- [ ] **Step 8: Update src/options/index.tsx**
 
 ```tsx
 import { render } from 'preact';
@@ -1781,15 +1927,217 @@ import './options.css';
 render(<Options />, document.getElementById('app')!);
 ```
 
-- [ ] **Step 7: Commit options page**
+- [ ] **Step 9: Commit options page**
 
 ```bash
-git add src/options/ && git commit -m "feat: options page — wallet vault UI, deploy defaults, Pinata config"
+git add src/options/ && git commit -m "feat: options page — wallet vault, deploy defaults, rewards template, Pinata config, templates"
 ```
 
 ---
 
-## Task 6: Build + Manual End-to-End Test
+## Task 6: Batch Deploy UI
+
+**Files:**
+- Create: `src/popup/views/BatchView.tsx`
+- Modify: `src/popup/App.tsx` (add `batch` view + port logic)
+- Modify: `src/popup/views/FormView.tsx` (add BATCH DEPLOY button)
+
+The batch UI uses the Port API (not sendMessage) — the SW pushes `SwEvent` frames over the port.
+
+- [ ] **Step 1: Create src/popup/views/BatchView.tsx**
+
+```tsx
+import { useState, useEffect } from 'preact/hooks';
+import type { SwEvent, BatchDeployResult, DeployPayload } from '../../lib/messages.js';
+import { CHAIN_CONFIG } from '../../lib/chains.js';
+
+interface BatchProgress {
+  walletId: string;
+  walletName: string;
+  status: 'pending' | 'deploying' | 'success' | 'failed';
+  txHash?: `0x${string}`;
+  tokenAddress?: `0x${string}`;
+  error?: string;
+}
+
+interface Props {
+  payload: DeployPayload;
+  walletIds: string[];
+  walletNames: Record<string, string>;
+  chainId: number;
+  onComplete: (results: BatchDeployResult[]) => void;
+  onBack: () => void;
+}
+
+export function BatchView({ payload, walletIds, walletNames, chainId, onComplete, onBack }: Props) {
+  const [progress, setProgress] = useState<BatchProgress[]>(
+    walletIds.map(id => ({ walletId: id, walletName: walletNames[id] ?? id, status: 'pending' }))
+  );
+  const [done, setDone] = useState(false);
+  const [interrupted, setInterrupted] = useState(false);
+
+  useEffect(() => {
+    const port = chrome.runtime.connect({ name: 'batch-deploy' });
+
+    port.postMessage({ type: 'BATCH_DEPLOY', payload, walletIds });
+
+    port.onMessage.addListener((event: SwEvent) => {
+      if (event.type === 'BATCH_PROGRESS') {
+        setProgress(prev => prev.map(p =>
+          p.walletId === event.walletId
+            ? { ...p, status: event.status, txHash: event.txHash, tokenAddress: event.tokenAddress, error: event.error }
+            : p
+        ));
+      }
+      if (event.type === 'BATCH_COMPLETE') {
+        setDone(true);
+        port.disconnect();
+        onComplete(event.results);
+      }
+    });
+
+    port.onDisconnect.addListener(() => {
+      // SW killed mid-batch
+      if (!done) setInterrupted(true);
+    });
+
+    return () => { try { port.disconnect(); } catch {} };
+  }, []);
+
+  const explorer = CHAIN_CONFIG[chainId]?.explorer ?? 'https://basescan.org';
+
+  return (
+    <div>
+      <div class="header">
+        <span class="header-title">⚡ Batch Deploy</span>
+        {done && <button class="icon-btn" onClick={onBack}>← Back</button>}
+      </div>
+      <div class="view-body">
+        {interrupted && (
+          <div style={{ background: 'rgba(255,71,87,0.1)', border: '1px solid var(--red)', borderRadius: 'var(--radius)', padding: '12px', marginBottom: '12px' }}>
+            <p style={{ color: 'var(--red)', fontWeight: 600 }}>⚠ Batch interrupted (service worker killed)</p>
+            <p style={{ fontSize: '12px', color: 'var(--text-dim)', marginTop: '4px' }}>
+              {progress.filter(p => p.status === 'success').length}/{walletIds.length} completed
+            </p>
+          </div>
+        )}
+
+        {progress.map(p => (
+          <div key={p.walletId} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
+            <span style={{ width: '16px', textAlign: 'center' }}>
+              {p.status === 'pending' && '○'}
+              {p.status === 'deploying' && <span class="spinner" />}
+              {p.status === 'success' && <span style={{ color: 'var(--green)' }}>✅</span>}
+              {p.status === 'failed' && <span style={{ color: 'var(--red)' }}>❌</span>}
+            </span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600, fontSize: '13px' }}>{p.walletName}</div>
+              {p.status === 'success' && p.tokenAddress && (
+                <div style={{ fontSize: '11px', color: 'var(--text-dim)' }}>
+                  <span style={{ fontFamily: 'monospace' }}>{p.tokenAddress.slice(0, 10)}...</span>
+                  {' '}<a href={`${explorer}/token/${p.tokenAddress}`} target="_blank">↗</a>
+                  {' '}<a href={`https://clanker.world/clanker/${p.tokenAddress}`} target="_blank">🌍</a>
+                </div>
+              )}
+              {p.status === 'failed' && p.error && (
+                <div style={{ fontSize: '11px', color: 'var(--red)' }}>{p.error.slice(0, 80)}</div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {done && (
+          <button class="btn btn-primary" onClick={onBack} style={{ marginTop: '16px' }}>
+            View History
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+```
+
+- [ ] **Step 2: Add batch state to App.tsx**
+
+In `App.tsx`, add `'batch'` to `AppView`, add `batchWalletIds` and `batchWalletNames` to `AppState`, and add the BatchView render:
+
+```tsx
+// Add to AppView:
+export type AppView = 'loading' | 'form' | 'confirm' | 'pending' | 'success' | 'history' | 'batch';
+
+// Add to AppState:
+export interface AppState {
+  // ... existing fields ...
+  batchWalletIds?: string[];
+  batchWalletNames?: Record<string, string>;
+}
+
+// Add handler:
+async function onBatchDeploy(walletIds: string[], walletNames: Record<string, string>) {
+  setState(prev => ({ ...prev, view: 'batch', batchWalletIds: walletIds, batchWalletNames: walletNames }));
+}
+
+// Add render case (before FormView return):
+if (state.view === 'batch') {
+  return (
+    <BatchView
+      payload={{ form: state.form, scraped: state.scraped }}
+      walletIds={state.batchWalletIds!}
+      walletNames={state.batchWalletNames!}
+      chainId={state.form.chainId}
+      onComplete={() => setState(prev => ({ ...prev, view: 'history' }))}
+      onBack={() => setState(prev => ({ ...prev, view: 'form' }))}
+    />
+  );
+}
+```
+
+- [ ] **Step 3: Add BATCH DEPLOY button to FormView**
+
+In `FormView.tsx`, load vault entries and add the batch button to the quick card. Add to FormView props and quick-card:
+
+```tsx
+// Add to FormView Props:
+interface Props {
+  // ... existing ...
+  vaultWallets: Array<{ id: string; name: string; active: boolean }>;
+  onBatchDeploy: (walletIds: string[], walletNames: Record<string, string>) => void;
+}
+
+// In quick-card, after QUICK DEPLOY button:
+{vaultWallets.filter(w => w.active).length >= 2 && (
+  <button
+    class="btn btn-secondary"
+    style={{ marginTop: '6px' }}
+    disabled={deployBlocked}
+    onClick={() => {
+      const active = vaultWallets.filter(w => w.active);
+      const names = Object.fromEntries(active.map(w => [w.id, w.name]));
+      onBatchDeploy(active.map(w => w.id), names);
+    }}
+  >
+    ⚡ BATCH DEPLOY ({vaultWallets.filter(w => w.active).length} wallets)
+  </button>
+)}
+```
+
+In `App.tsx`, load vault wallets from storage and pass to FormView:
+
+```tsx
+// In App state init / init() function, after loading config:
+const vaultWallets = config.vaultEntries.map(e => ({ id: e.id, name: e.name, active: e.active }));
+setState(prev => ({ ...prev, ..., vaultWallets })); // add vaultWallets to AppState
+```
+
+- [ ] **Step 4: Commit batch UI**
+
+```bash
+git add src/popup/views/BatchView.tsx src/popup/App.tsx src/popup/views/FormView.tsx && git commit -m "feat: batch deploy UI — BatchView with Port API, progress tracking, BATCH DEPLOY button in FormView"
+```
+
+---
+
+## Task 7: Build + Manual End-to-End Test
 
 - [ ] **Step 1: TypeScript check**
 
@@ -1855,7 +2203,8 @@ git add -A && git commit -m "feat: Phase 3 complete — full popup + options UI,
 
 ## Known Post-Phase-3 Work
 
-- Batch deploy UI (`BatchView.tsx`) — not in this plan, add as follow-up task
 - Mode A (injected wallet) full flow testing — requires real Rabby/MetaMask install
+- Two-phase deploy (Port API) for live txHash in PendingView — current impl shows hash only in SuccessView
 - GMGN selector verification — check against live site before production use
 - Real deploy test with test ETH on Base Sepolia (if available)
+- Monad chain: add custom RPC input to DeploySection in Options

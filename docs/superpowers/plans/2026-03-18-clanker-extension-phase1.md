@@ -330,6 +330,7 @@ export interface DeployPayload {
   form: DeployFormState;
   scraped: ScrapedData;
   walletId?: string;
+  skipStatUpdate?: boolean;  // batch.ts sets true — defers all stat writes to after batch completes
 }
 
 export interface BatchDeployResult {
@@ -358,7 +359,10 @@ export type BgMessage =
   | { type: 'WALLET_REQUEST'; request: EIP1193Request }
   | { type: 'UNLOCK_VAULT'; password: string }
   | { type: 'LOCK_VAULT' }
-  | { type: 'VAULT_STATUS' };
+  | { type: 'VAULT_STATUS' }
+  // ADD_WALLET: encrypt PK in SW so plaintext never lives in popup heap
+  | { type: 'ADD_WALLET'; name: string; plainPk: string; password: string }
+  | { type: 'REMOVE_WALLET'; id: string };
 
 export type BgResponse<T extends BgMessage['type']> =
   T extends 'DEPLOY' ? { txHash: `0x${string}`; tokenAddress: `0x${string}` } :
@@ -1031,10 +1035,29 @@ async function probeRpc(url: string, chain: Chain, timeoutMs = 3000): Promise<bo
   } catch { return false; }
 }
 
+export async function getCustomRpc(chainId: number): Promise<string | null> {
+  const { storage } = await import('./storage.js');
+  const config = await storage.get();
+  // Stored as `customRpc_${chainId}` in config — user sets in Options → Deploy Defaults
+  return (config as any)[`customRpc_${chainId}`] ?? null;
+}
+
 export async function getBestRpc(chainId: number): Promise<string> {
   if (rpcCache.has(chainId)) return rpcCache.get(chainId)!;
   const config = CHAIN_CONFIG[chainId];
   if (!config) throw new Error(`Unsupported chain: ${chainId}`);
+
+  // For chains requiring a user-configured RPC (e.g. Monad), check that first
+  if (config.rpcRequired) {
+    const customRpc = await getCustomRpc(chainId);
+    if (!customRpc) throw new Error(`${config.name} requires a custom RPC — configure it in Options → Deploy Defaults`);
+    if (await probeRpc(customRpc, config.viemChain)) {
+      rpcCache.set(chainId, customRpc);
+      return customRpc;
+    }
+    throw new Error(`Custom RPC for ${config.name} is unreachable: ${customRpc}`);
+  }
+
   for (const rpc of config.rpcs) {
     if (await probeRpc(rpc, config.viemChain)) {
       rpcCache.set(chainId, rpc);
@@ -1047,14 +1070,6 @@ export async function getBestRpc(chainId: number): Promise<string> {
 export async function getPublicClient(chainId: number): Promise<PublicClient> {
   const rpc = await getBestRpc(chainId);
   return createPublicClient({ chain: CHAIN_CONFIG[chainId].viemChain, transport: http(rpc) });
-}
-
-// Check if custom RPC has been configured for Monad (or other rpcRequired chains)
-export async function getCustomRpc(chainId: number): Promise<string | null> {
-  const { storage } = await import('./storage.js');
-  const config = await storage.get();
-  // Stored as `customRpc_${chainId}` key in config — user sets in Options → Network section
-  return (config as any)[`customRpc_${chainId}`] ?? null;
 }
 ```
 
@@ -1469,7 +1484,11 @@ import { getPublicClient, CHAIN_CONFIG } from '../../lib/chains.js';
 import { getWalletClient, getAccount } from '../vault.js';
 import { storage } from '../../lib/storage.js';
 import { addDeployRecord } from './history.js';
-import { POOL_POSITIONS } from 'clanker-sdk/src/constants.js';
+// POOL_POSITIONS: verify import path against SDK dist/ after build:
+//   cat "/Users/aaa/projects/ClankerSDK 2026/dist/constants.js" | grep POOL_POSITIONS
+// Likely exports: 'clanker-sdk' (root) or 'clanker-sdk/v4'. NOT 'clanker-sdk/src/...' (source, not dist)
+// Adjust if compile fails — check package.json exports field in the SDK.
+import { POOL_POSITIONS } from 'clanker-sdk';
 import { getTickFromMarketCap } from 'clanker-sdk/utils';
 import { clankerConfigFor } from 'clanker-sdk';
 import type { ClankerTokenV4 } from '../../lib/clanker.js';
@@ -1477,8 +1496,8 @@ import { createPublicClient, http } from 'viem';
 
 export async function handleDeploy(
   payload: DeployPayload
-): Promise<{ txHash: `0x${string}`; tokenAddress: `0x${string}` }> {
-  const { form, scraped, walletId: requestedWalletId } = payload;
+): Promise<{ txHash: `0x${string}`; tokenAddress: `0x${string}`; walletId: string }> {
+  const { form, scraped, walletId: requestedWalletId, skipStatUpdate = false } = payload;
   const config = await storage.get();
 
   // 1. Resolve wallet
@@ -1657,8 +1676,9 @@ export async function handleDeploy(
   };
   await addDeployRecord(record);
 
-  // 14. Update wallet stats (deferred — batch updates handled in batch handler)
-  if (config.walletMode === 'vault') {
+  // 14. Update wallet stats — skipped in batch mode (Gotcha #28: no write storm)
+  // batch.ts sets skipStatUpdate=true and does a single batched storage.set() after all deploys complete.
+  if (config.walletMode === 'vault' && !skipStatUpdate) {
     const entries = config.vaultEntries.map(e =>
       e.id === walletId
         ? { ...e, lastUsedAt: Date.now(), deployCount: e.deployCount + 1 }
@@ -1667,7 +1687,7 @@ export async function handleDeploy(
     await storage.set({ vaultEntries: entries, rotationIndex: config.rotationIndex + 1 });
   }
 
-  return { txHash, tokenAddress };
+  return { txHash, tokenAddress, walletId };
 }
 
 function getWethAddress(chainId: number): `0x${string}` {
@@ -1784,6 +1804,27 @@ async function handleMessage(msg: BgMessage, activeTabId?: number): Promise<unkn
       };
     }
 
+    // ADD_WALLET: encryption happens in SW so plaintext PK never lives in popup heap
+    case 'ADD_WALLET': {
+      const { encryptPrivateKey } = await import('./crypto.js');
+      const { privateKeyToAccount } = await import('viem/accounts');
+      const { encryptedPK, iv, salt } = await encryptPrivateKey(msg.plainPk, msg.password);
+      const account = privateKeyToAccount(msg.plainPk as `0x${string}`);
+      const entry = {
+        id: crypto.randomUUID(), name: msg.name, address: account.address,
+        encryptedPK, iv, salt, createdAt: Date.now(), lastUsedAt: 0, deployCount: 0, active: true,
+      };
+      const cfg = await storage.get();
+      await storage.set({ vaultEntries: [...cfg.vaultEntries, entry] });
+      return { ok: true, address: account.address };
+    }
+
+    case 'REMOVE_WALLET': {
+      const cfg = await storage.get();
+      await storage.set({ vaultEntries: cfg.vaultEntries.filter(e => e.id !== msg.id) });
+      return { ok: true };
+    }
+
     default:
       return { error: `Unknown message type: ${(msg as any).type}` };
   }
@@ -1847,6 +1888,7 @@ export async function runBatchDeploy(
         ...payload,
         form: { ...payload.form, customSalt: `0x${salt}`, vanityEnabled: false },
         walletId,
+        skipStatUpdate: true,  // batch.ts defers stat writes (Gotcha #28)
       };
 
       const { txHash, tokenAddress } = await handleDeploy(walletPayload);
@@ -1905,8 +1947,25 @@ export async function runBatchDeploy(
     }
   }
 
-  // Clear pending batch
-  await storage.set({ pendingBatch: undefined });
+  // Batch write all vault stat updates in a single storage.set() call (Gotcha #28)
+  // handleDeploy ran with skipStatUpdate=true, so no per-deploy writes happened
+  const successWalletIds = results.filter(r => r.status === 'success').map(r => r.walletId);
+  if (successWalletIds.length > 0) {
+    const current = await storage.get();
+    const now = Date.now();
+    const updatedEntries = current.vaultEntries.map(e => {
+      const useCount = successWalletIds.filter(id => id === e.id).length;
+      if (useCount === 0) return e;
+      return { ...e, lastUsedAt: now, deployCount: e.deployCount + useCount };
+    });
+    await storage.set({
+      vaultEntries: updatedEntries,
+      rotationIndex: current.rotationIndex + successWalletIds.length,
+      pendingBatch: undefined,
+    });
+  } else {
+    await storage.set({ pendingBatch: undefined });
+  }
 
   const completeEvent: SwEvent = { type: 'BATCH_COMPLETE', results };
   port.postMessage(completeEvent);
