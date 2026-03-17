@@ -1,0 +1,25 @@
+{
+  "name": "timc-clanker-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "preact": "^10.29.0",
+    "viem": "^2.38.3",
+    "clanker-sdk": "file:../../../../ClankerSDK-2026"
+  },
+  "devDependencies": {
+    "wxt": "^0.20.20",
+    "@types/chrome": "^0.1.38",
+    "typescript": "^5.3.0",
+    "vitest": "^2.0.0",
+    "jsdom": "^25.0.0",
+    "@vitest/coverage-v8": "^2.0.0"
+  }
+}
