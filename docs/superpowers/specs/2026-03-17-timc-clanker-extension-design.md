@@ -71,6 +71,7 @@ timc-clanker-extension/
 │   │   └── parsers/
 │   │       ├── twitter.ts               # twitter.com / x.com
 │   │       ├── farcaster.ts             # warpcast.com
+│   │       ├── gmgn.ts                  # gmgn.ai token pages
 │   │       └── generic.ts               # Universal OG meta fallback
 │   │
 │   ├── popup/
@@ -130,13 +131,18 @@ export type BgMessage =
   | { type: 'WALLET_PING' }
   | { type: 'WALLET_REQUEST'; request: EIP1193Request };
 
+// NOTE: bigint is NOT serializable via structuredClone (chrome.runtime.sendMessage).
+// All bigint values must be serialized to string before sending and parsed back on receipt.
 export type BgResponse<T extends BgMessage['type']> =
   T extends 'DEPLOY' ? { txHash: `0x${string}`; tokenAddress: `0x${string}` } :
   T extends 'UPLOAD_IMAGE' | 'UPLOAD_IMAGE_BLOB' ? { ipfsUrl: string } :
-  T extends 'GET_AVAILABLE_REWARDS' ? { amount: bigint } :
+  T extends 'GET_AVAILABLE_REWARDS' ? { amount: string } :  // bigint.toString() — parse with BigInt(amount)
   T extends 'GET_HISTORY' ? { records: DeployRecord[] } :
   T extends 'WALLET_PING' ? { ready: true } :
   { ok: true };
+
+// All BgResponse types also include an error branch:
+// { error: string } — handler must always check error before using result fields.
 ```
 
 ---
@@ -189,7 +195,21 @@ export const CHAIN_CONFIG = {
     explorer: 'https://arbiscan.io',
     marketCapUnit: 'ETH',
   },
-  // ... unichain, abstract, monad
+  130: {
+    name: 'Unichain',
+    viemChain: unichain,
+    rpcs: ['https://mainnet.unichain.org'],
+    explorer: 'https://uniscan.xyz',
+    marketCapUnit: 'ETH',
+  },
+  143: {
+    name: 'Monad',
+    viemChain: monad,  // custom viem chain from SDK
+    rpcs: [], // TODO: Monad RPC not yet in SDK — user must configure in Options
+    explorer: 'https://explorer.monad.xyz',
+    marketCapUnit: 'MON',
+    rpcRequired: true, // flag: show warning if no custom RPC configured
+  },
 } as const;
 
 export async function getPublicClient(chainId: number) {
@@ -243,6 +263,9 @@ interface ExtensionConfig {
   sniperSecondsToDecay: number; // default: 15
 
   // PINATA
+  // Note: stored as plaintext in chrome.storage.local. Chrome's "encrypted at rest"
+  // applies at OS disk level only — not JS-accessible layer. Acceptable tradeoff for
+  // personal use (Pinata key only grants image upload, no fund access).
   pinataApiKey: string;
   pinataSecretKey: string;
 
@@ -274,7 +297,7 @@ Scraped automatically, all editable:
 - Socials: Twitter, Telegram, Website
 
 ### Section 2 — Network & Pool (collapsed)
-- **Chain**: dropdown (Base, Ethereum, Arbitrum, Unichain, Abstract, Monad)
+- **Chain**: dropdown (Base, Ethereum, Arbitrum, Unichain, Monad) — Abstract excluded (v3.1 only)
 - **Paired Token**: dropdown with logos — WETH, DEGEN, CLANKER, ANON, HIGHER, cbBTC, A0X, Custom address
 - **Pool Position**: preset chips — Standard / Project / TwentyETH — with tooltip showing tick ranges in USD
 - **Starting Market Cap**: slider → translates to `tickIfToken0IsClanker`
@@ -286,7 +309,11 @@ Scraped automatically, all editable:
 
 ### Section 4 — Sniper Protection (collapsed, v4.1+)
 - Starting fee %, Ending fee %, Decay duration (seconds)
+- **Sniper fee values are in Unibps** (1,000,000 = 100%). Display = `value / 10_000` as %.
+- Constraints: `endingFee` min = **30,000 Unibps (3%)**, max = 800,000. `startingFee` must be > `endingFee`.
+- UI: clamp inputs to valid ranges. Show "%" label, convert to/from Unibps internally.
 - Tooltip explaining MEV auction mechanic
+- Only show if chain has `mevModuleV2` (Base, Mainnet, Monad). Grey out + tooltip for other chains.
 
 ### Section 5 — Extensions (collapsed)
 Each extension is a toggle. Expands when enabled:
@@ -300,6 +327,8 @@ Each extension is a toggle. Expands when enabled:
 **Dev Buy (Creator Buy)**
 - ETH amount input
 - Recipient address (defaults to tokenAdmin)
+- **⚠️ Warning**: Dev Buy only works correctly for WETH-paired tokens. If paired token ≠ WETH, `poolKey` must be manually configured (advanced). Show inline warning when Dev Buy is enabled + non-WETH paired token is selected: *"Dev Buy with non-WETH pairs requires a poolKey — check Advanced settings."*
+- Advanced (hidden by default): poolKey fields (currency0, currency1, fee, tickSpacing, hooks) + amountOutMin
 
 **Airdrop**
 - Merkle root (hex input)
@@ -338,12 +367,16 @@ Each extension is a toggle. Expands when enabled:
 7. If simulate=true: clanker.deploySimulate(config) → catch revert early, show error
 8. Wallet signing:
    Mode A: WALLET_PING → content script ready check → relay EIP-1193 to Rabby
-   Mode B: password prompt → decrypt PK (600k PBKDF2) → viem.privateKeyToAccount → sign
-9. clanker.deploy(config) → { txHash, waitForTransaction }
-10. Send txHash to popup → show PendingView with explorer link
-11. waitForTransaction() → { address: tokenAddress }
-12. Save DeployRecord to chrome.storage deployHistory
-13. Popup shows SuccessView
+   Mode B: password prompt → decrypt PK (600k PBKDF2) → viem.privateKeyToAccount(pk)
+          → createWalletClient({ account, chain: CHAIN_CONFIG[chainId].viemChain, transport: http(rpc) })
+          → PK cleared from memory immediately after WalletClient created
+9. clanker.deploy(config) → ClankerResult<{ txHash, waitForTransaction }>
+   9a. ALWAYS destructure result: if (result.error) → send { error: result.error.message } to popup, abort
+9b. Send txHash to popup → show PendingView with explorer link
+10. waitForTransaction() → ClankerResult<{ address: tokenAddress }>
+   10a. ALWAYS check error branch before proceeding
+11. Save DeployRecord to chrome.storage deployHistory
+12. Popup shows SuccessView
 ```
 
 ---
@@ -356,9 +389,12 @@ Each extension is a toggle. Expands when enabled:
     ├─ Already ipfs://... → use as-is
     │
     ├─ https:// URL
-    │   ├─ Check cache: storage.get(`imgcache:${hash(url)}`)
+    │   ├─ Check cache: storage.get(`imgcache:${sha1hex(url)}`)
+    │   │   hash = SHA-1 via crypto.subtle.digest('SHA-1', TextEncoder.encode(url)) → hex string
+    │   │   (SHA-1 is fine here — not security-sensitive, just a cache key)
     │   ├─ Hit → return cached ipfs://CID
     │   └─ Miss → service worker fetch() → blob → Pinata → cache → return ipfs://CID
+    │       Note: large files (>5MB) are cloned through structured clone — resize before upload
     │
     └─ User file upload (File input in popup)
         └─ ArrayBuffer sent to service worker → Pinata → return ipfs://CID
@@ -479,7 +515,16 @@ export function generateSymbol(input: string): string {
 |---|---|---|---|
 | `twitter.ts` | twitter.com, x.com | `og:title` "Name (@handle)" | `@handle` |
 | `farcaster.ts` | warpcast.com | `og:title`, `og:description` | handle from URL |
+| `gmgn.ts` | gmgn.ai | token page DOM + meta | token ticker from page |
 | `generic.ts` | any site | `og:title`, `og:image`, `og:description` | first word of title |
+
+### Parser: gmgn.ts (gmgn.ai)
+GMGN token pages contain rich token metadata. Scrape:
+- Token name: `og:title` or `.token-name` DOM element
+- Ticker/symbol: DOM selector (`.token-symbol` or URL path segment)
+- Image: token logo from `og:image` or inline `<img>` near token name
+- Description: `og:description` or token bio section
+- Socials: scrape social links from token page (twitter, telegram, website buttons)
 
 All parsers return:
 ```typescript
@@ -586,9 +631,8 @@ export default defineConfig({
     ],
   },
   vite: () => ({
-    resolve: {
-      alias: { 'react': 'preact/compat', 'react-dom': 'preact/compat' },
-    },
+    // Note: @wxt-dev/module-preact already injects preact/compat aliases.
+    // Only add manual aliases if a third-party dep imports 'react' directly.
     build: { target: 'es2022' },
   }),
 });
