@@ -1,7 +1,7 @@
 # Clanker Extension — Smart Source System & macOS White Redesign
 
 **Date:** 2026-03-18
-**Status:** Approved (rev 2 — reviewer issues resolved)
+**Status:** Approved (rev 3 — SDK intelligence integrated)
 **Branch:** `claude/strange-newton`
 
 ---
@@ -562,23 +562,100 @@ starting_market_cap   → informational
 fees                  → informational
 ```
 
-Single token lookup: `GET https://www.clanker.world/api/tokens?contract_address={address}`
+**Single token lookup — endpoint to confirm during implementation:**
+
+`GET https://www.clanker.world/api/tokens?contract_address={address}`
+
+⚠️ During implementation, verify that `?contract_address=` actually filters — live testing
+showed the endpoint may return the latest tokens list instead. If so, use:
+`GET https://www.clanker.world/api/tokens?address={address}` (returns single object, not array).
+The implementation must handle both response shapes: single object OR array — take `[0]` if array.
 
 ---
 
-## 10. Out of Scope
+## 10. Clanker SDK v4 — Implementation Constraints
+
+Verified directly from `ClankerSDK 2026/src/config/clankerTokenV4.ts` and `src/utils/clankers.ts`.
+These constraints are authoritative for form validation.
+
+### 10.1 Vault
+
+- `percentage` max: **90** (not 30 — some older docs are wrong)
+- `lockup` range: 0–1095 days
+- Update form validation: `vault.vaultSupplyPct` max 90, not 30
+
+### 10.2 Sniper Fees — Correct Defaults
+
+```ts
+sniperFees: {
+  startingFee:     666_777,   // 66.67%
+  endingFee:       41_673,    // 4.17%
+  secondsToDecay:  15,
+}
+```
+
+FormView defaults must match. `bps` unit here is `/ 1_000_000` (not `/ 10_000`).
+
+### 10.3 Dynamic Fee — Extended Parameters
+
+Beyond `baseBps`/`maxBps`, the SDK exposes advanced parameters. These are **not** surfaced
+in the current `DeployFormState` and stay out of scope for this release (expert-use only):
+
+```ts
+// Advanced (future scope — not exposed in FormView):
+referenceTickFilterPeriod  // smoothing period
+resetPeriod
+resetTickFilter
+feeControlNumerator
+decayFilterBps
+```
+
+### 10.4 Fee Recipients — `FeeIn` Enum
+
+Each reward recipient has a `feeIn: 'Both' | 'Paired' | 'Clanker'` field.
+The current `rewards` array in `DeployFormState` stores `token: string` — map:
+`'Both' → 'Both'`, `'ETH'|'WETH'|'Paired' → 'Paired'`, `'CLNK'|'Clanker' → 'Clanker'`.
+No form changes needed — existing UI is compatible.
+
+### 10.5 Presale Extension
+
+SDK supports a `presale` extension. Out of scope for this release.
+
+### 10.6 Factory Contract Addresses (v4)
+
+These are already in `src/lib/chains.ts` via `CHAIN_CONFIG`. For reference:
+
+| Chain | ID | Factory |
+|-------|----|---------|
+| Base | 8453 | `0xE85A59c628F7d27878ACeB4bf3b35733630083a9` |
+| Arbitrum | 42161 | `0xEb9D2A726Edffc887a574dC7f46b3a3638E8E44f` |
+| Ethereum | 1 | `0x6C8599779B03B00AAaE63C6378830919Abb75473` |
+| Unichain | 130 | `0xE85A59c628F7d27878ACeB4bf3b35733630083a9` |
+| Monad | 143 | `0xF9a0C289Eab6B571c6247094a853810987E5B26D` |
+
+### 10.7 SDK Chain List
+
+Full list from `clankers.ts`: `[8453, 10143, 84532, 42161, 130, 143, 1]`
+— includes `monadTestnet (10143)` and `baseSepolia (84532)` which are NOT in `CHAIN_CONFIG`.
+Do not add testnet chains to the UI for this release.
+
+---
+
+## 11. Out of Scope
 
 - OAuth / authenticated Twitter scraping
 - Batch URL import
 - Video / GIF support for token image
-- Changes to vault, devbuy, airdrop, rewards, fee logic
+- Changes to vault, devbuy, airdrop, rewards, fee logic (except vault max 90% fix)
 - Options page redesign
 - Element Picker mode (removed, not replaced in future scope)
 - New chain additions beyond the 5 in `CHAIN_CONFIG`
+- Dynamic fee advanced params (referenceTickFilterPeriod etc.) — future expert mode
+- Presale extension
 
 ---
 
-## 11. Success Criteria
+## 12. Success Criteria
 
 - [ ] Zero silent Pinata uploads — every upload requires explicit user action
 - [ ] Drag & drop works without popup closing (tab mode)
