@@ -1,0 +1,797 @@
+/* ── Tailwind v4 ─────────────────────────────────────────────────────────────── */
+/* @tailwindcss/vite plugin handles processing — no explicit @import needed */
+
+@theme {
+  /* Surfaces */
+  --color-bg:          #F5F5F7;
+  --color-surface:     #FFFFFF;
+  --color-surface-2:   #F5F5F7;
+  --color-surface-3:   #EBEBED;
+
+  /* Text — Apple HIG hierarchy */
+  --color-text:        #1D1D1F;
+  --color-text-2:      #6E6E73;
+  --color-text-3:      #AEAEB2;
+
+  /* Accent — Base Chain Blue */
+  --color-accent:      #0052FF;
+  --color-accent-hover:#0040CC;
+  --color-accent-dim:  rgba(0,82,255,0.10);
+  --color-accent-ring: rgba(0,82,255,0.25);
+
+  /* Semantic */
+  --color-ok:          #34C759;
+  --color-warn:        #FF9F0A;
+  --color-err:         #FF3B30;
+
+  /* Borders */
+  --color-border:      rgba(0,0,0,0.08);
+  --color-border-hi:   rgba(0,0,0,0.14);
+
+  /* Typography */
+  --font-sans: -apple-system, 'SF Pro Display', BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Geometry */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+}
+
+/* ── Shadows (outside @theme) ────────────────────────────────────────────────── */
+:root {
+  --shadow-sm:    0 1px 2px rgba(0,0,0,0.06), 0 0 0 1px rgba(0,0,0,0.04);
+  --shadow-md:    0 4px 12px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.05);
+  --shadow-lg:    0 8px 30px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.05);
+  --shadow-float: 0 20px 60px rgba(0,0,0,0.14), 0 0 0 1px rgba(0,0,0,0.06);
+
+  /* ── Backward-compat aliases for existing views ───────── */
+  --bg:         var(--color-bg);
+  --bg2:        var(--color-surface-2);
+  --bg3:        var(--color-surface-3);
+  --text-1:     var(--color-text);
+  --text-2:     var(--color-text-2);
+  --text-3:     var(--color-text-3);
+  --text-dim:   var(--color-text-3);
+  --text-muted: var(--color-text-2);
+  --border:     var(--color-border);
+  --border-hi:  var(--color-border-hi);
+  --green:      var(--color-ok);
+  --ok:         var(--color-ok);
+  --red:        var(--color-err);
+  --err:        var(--color-err);
+  --yellow:     var(--color-warn);
+  --warn:       var(--color-warn);
+  --v2:         var(--color-accent);
+  --r2:         var(--radius-md);
+  --radius:     var(--radius-lg);
+  --grad:       linear-gradient(135deg, var(--color-accent), #00A3FF);
+}
+
+/* ── Reset & base ────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--color-text);
+  background: var(--color-bg);
+  width: 400px;
+  min-height: 200px;
+  overflow-x: hidden;
+}
+
+body.tab-mode {
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+#app { width: 100%; }
+
+/* ── Popup root / layout ────────────────────────────────────────────────────── */
+.popup-root {
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+}
+
+.view-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow-y: auto;
+  max-height: 600px;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header-logo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-logo-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--color-accent);
+  color: white;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 800;
+  box-shadow: var(--shadow-sm);
+  flex-shrink: 0;
+}
+
+.header-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  flex: 1;
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  outline: none;
+  transition: background 120ms, box-shadow 120ms, opacity 120ms;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--color-accent);
+  color: white;
+  box-shadow: var(--shadow-sm);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  box-shadow: var(--shadow-md);
+}
+.btn-primary:active:not(:disabled) { opacity: 0.85; }
+
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-hi);
+  box-shadow: var(--shadow-sm);
+}
+.btn-secondary:hover:not(:disabled) { background: var(--color-surface-3); }
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-2);
+}
+.btn-ghost:hover:not(:disabled) { background: var(--color-surface-3); color: var(--color-text); }
+
+.btn-danger {
+  background: rgba(255,59,48,0.10);
+  color: var(--color-err);
+  border: 1px solid rgba(255,59,48,0.2);
+}
+.btn-danger:hover:not(:disabled) { background: rgba(255,59,48,0.18); }
+
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-lg { padding: 10px 20px; font-size: 14px; }
+.btn-icon { padding: 6px; border-radius: var(--radius-md); }
+.icon-btn { padding: 6px; border-radius: var(--radius-md); background: transparent; border: none; cursor: pointer; color: var(--color-text-2); }
+.icon-btn:hover { background: var(--color-surface-3); color: var(--color-text); }
+
+/* ── Cards ───────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Quick card (FormView top) ───────────────────────────────────────────────── */
+.quick-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+  margin-bottom: 8px;
+}
+
+/* ── Source cards (for SourceView accordion) ─────────────────────────────────── */
+.source-card {
+  cursor: pointer;
+  transition: box-shadow 150ms, border-color 150ms;
+  margin: 0 16px 8px;
+  overflow: hidden;
+}
+.source-card:hover { box-shadow: var(--shadow-md); }
+.source-card.expanded {
+  box-shadow: var(--shadow-md);
+  border-color: var(--color-accent-ring);
+}
+
+.source-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  user-select: none;
+}
+.source-card-body { padding: 0 14px 14px; }
+.source-icon { font-size: 18px; flex-shrink: 0; }
+
+/* ── Summary cards (ConfirmView) ─────────────────────────────────────────────── */
+.summary-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+  margin-bottom: 8px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 12px;
+}
+.summary-row:last-child { border-bottom: none; }
+.summary-row .label { color: var(--color-text-2); font-weight: 500; }
+.summary-row .value { color: var(--color-text); font-weight: 500; text-align: right; }
+
+/* ── Status row (ConfirmView / SuccessView) ───────────────────────────────────── */
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 6px 0;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--color-surface-3);
+  color: var(--color-text-2);
+}
+
+/* ── Form fields ─────────────────────────────────────────────────────────────── */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.field-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+.field-row .field { flex: 1; }
+
+.field label, .label, .label-sm {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-3);
+}
+
+.field input,
+.field textarea,
+.field select,
+input[type="text"], input[type="url"], input[type="number"], textarea, select {
+  background: rgba(0,0,0,0.06);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-text);
+  width: 100%;
+  transition: background 120ms, box-shadow 120ms;
+  outline: none;
+}
+
+.field input:focus,
+.field textarea:focus,
+.field select:focus,
+input[type="text"]:focus, input[type="url"]:focus, input[type="number"]:focus, textarea:focus, select:focus {
+  background: white;
+  box-shadow: 0 0 0 3px var(--color-accent-ring), var(--shadow-sm);
+}
+
+.field-error { font-size: 11px; color: var(--color-err); margin-top: 2px; }
+
+/* Inline editable fields (PreviewView token name/symbol) */
+.inline-edit {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  padding: 2px 0;
+  width: 100%;
+  transition: border-color 120ms;
+}
+.inline-edit:focus { background: transparent; box-shadow: none; border-bottom-color: var(--color-accent); }
+.inline-edit:hover { border-bottom-color: var(--color-border-hi); }
+
+/* ── Toggle (FormView) ────────────────────────────────────────────────────────── */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+}
+
+.toggle-label {
+  font-size: 13px;
+  color: var(--color-text);
+  font-weight: 500;
+}
+
+.toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle input { opacity: 0; width: 0; height: 0; }
+
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+  background: var(--color-surface-3);
+  transition: background 150ms;
+  cursor: pointer;
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 2px;
+  top: 2px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 150ms;
+}
+.toggle input:checked + .toggle-track { background: var(--color-accent); }
+.toggle input:checked + .toggle-track::after { transform: translateX(16px); }
+
+/* ── Chips ────────────────────────────────────────────────────────────────────── */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.chip {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--color-border-hi);
+  background: var(--color-surface);
+  color: var(--color-text-2);
+  transition: all 100ms;
+}
+.chip.active, .chip:hover {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: white;
+}
+
+/* ── Sections (FormView collapsible) ─────────────────────────────────────────── */
+.section {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin-bottom: 8px;
+  box-shadow: var(--shadow-sm);
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text);
+  background: var(--color-surface);
+  transition: background 100ms;
+}
+.section-header:hover { background: var(--color-surface-2); }
+.section-header.open { color: var(--color-accent); }
+
+.section-body { padding: 10px 12px; }
+.section-body.hidden { display: none; }
+
+.section-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-border-hi);
+  flex-shrink: 0;
+}
+.section.open > .section-header .section-dot {
+  background: var(--color-accent);
+  box-shadow: 0 0 6px var(--color-accent-dim);
+}
+
+.chevron { font-size: 10px; color: var(--color-text-3); transition: transform 150ms; }
+.section-header.open .chevron { transform: rotate(180deg); }
+
+.summary { font-size: 11px; color: var(--color-text-3); margin-left: 6px; }
+
+/* ── Token image ─────────────────────────────────────────────────────────────── */
+.token-img-ring {
+  width: 52px;
+  height: 52px;
+  border-radius: 13px;
+  background: var(--grad);
+  padding: 2px;
+  box-shadow: var(--shadow-md);
+  flex-shrink: 0;
+}
+
+.token-img {
+  width: 100%;
+  height: 100%;
+  border-radius: 11px;
+  object-fit: cover;
+  display: grid;
+  place-items: center;
+  background: var(--color-surface-2);
+}
+
+/* ── Token info (FormView header area) ───────────────────────────────────────── */
+.token-info h2 {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: var(--color-text);
+}
+.token-info .ticker {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-2);
+}
+
+.token-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ── Address / copy ──────────────────────────────────────────────────────────── */
+.address {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-2);
+}
+
+.copy-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-3);
+  padding: 2px 4px;
+  border-radius: 4px;
+  font-size: 11px;
+  transition: color 100ms, background 100ms;
+}
+.copy-btn:hover { color: var(--color-accent); background: var(--color-accent-dim); }
+
+/* ── Symbol pill ─────────────────────────────────────────────────────────────── */
+.symbol {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 20px;
+  background: var(--color-surface-3);
+  color: var(--color-text-2);
+}
+
+/* ── Chain tag ───────────────────────────────────────────────────────────────── */
+.chain-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--color-accent-dim);
+  color: var(--color-accent);
+  font-weight: 500;
+}
+
+/* ── Template dropdown ────────────────────────────────────────────────────────── */
+.template-dropdown {
+  position: relative;
+}
+.template-dropdown-label {
+  font-size: 11px;
+  color: var(--color-text-3);
+  margin-bottom: 4px;
+}
+.template-btn {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-hi);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--color-text);
+  width: 100%;
+  text-align: left;
+}
+.template-btn:hover { background: var(--color-surface-2); }
+
+/* ── BPS bar ─────────────────────────────────────────────────────────────────── */
+.bps-bar-wrap {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--color-surface-3);
+  overflow: hidden;
+  margin-top: 4px;
+}
+.bps-bar {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--color-accent);
+  transition: width 200ms;
+}
+
+/* ── Badges ──────────────────────────────────────────────────────────────────── */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border-radius: 20px;
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--color-surface-3);
+  color: var(--color-text-2);
+}
+.badge-ok  { background: rgba(52,199,89,0.12);  color: var(--color-ok);   }
+.badge-warn{ background: rgba(255,159,10,0.12); color: var(--color-warn); }
+.badge-err { background: rgba(255,59,48,0.12);  color: var(--color-err);  }
+
+/* ── ok / err utility ─────────────────────────────────────────────────────────── */
+.ok  { color: var(--color-ok);  }
+.err { color: var(--color-err); }
+
+/* ── Spinners ────────────────────────────────────────────────────────────────── */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-border-hi);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+.spinner-lg {
+  width: 32px;
+  height: 32px;
+  border-width: 3px;
+  border-color: var(--color-border-hi);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+/* ── Ghost panel ─────────────────────────────────────────────────────────────── */
+.ghost-panel {
+  background: rgba(255,159,10,0.08);
+  border: 1px solid rgba(255,159,10,0.25);
+  border-radius: var(--radius-lg);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.ghost-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-warn);
+  margin-bottom: 6px;
+}
+
+/* ── Drop zone (SourceView image drop) ──────────────────────────────────────── */
+.drop-zone {
+  border: 2px dashed var(--color-border-hi);
+  border-radius: var(--radius-lg);
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--color-text-2);
+  font-size: 13px;
+  transition: border-color 150ms, background 150ms;
+  cursor: default;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: var(--color-accent);
+  background: var(--color-accent-dim);
+}
+
+/* ── Headings ────────────────────────────────────────────────────────────────── */
+.heading-lg {
+  font-family: var(--font-sans);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+}
+.heading-md {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-text);
+}
+
+.mono { font-family: var(--font-mono); font-size: 12px; }
+
+/* ── Tabs / nav links ────────────────────────────────────────────────────────── */
+.nav-link {
+  font-size: 12px;
+  color: var(--color-text-3);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  transition: color 120ms, background 120ms;
+}
+.nav-link:hover { color: var(--color-text-2); background: var(--color-surface-3); }
+
+/* ── Reward rows ─────────────────────────────────────────────────────────────── */
+.reward-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+/* ── Error/warning banners ───────────────────────────────────────────────────── */
+.error-banner, .deploy-error {
+  background: rgba(255,59,48,0.08);
+  border: 1px solid rgba(255,59,48,0.2);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--color-err);
+  margin-bottom: 8px;
+}
+
+/* ── Success view ─────────────────────────────────────────────────────────────── */
+.success-glow {
+  position: relative;
+}
+.success-glow::before {
+  content: '';
+  position: absolute;
+  inset: -20px;
+  background: radial-gradient(ellipse at center, rgba(52,199,89,0.15), transparent 70%);
+  pointer-events: none;
+}
+
+.success-icon {
+  font-size: 48px;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.success-title {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text);
+  text-align: center;
+}
+
+.success-subtitle {
+  font-size: 13px;
+  color: var(--color-text-2);
+  text-align: center;
+  margin-top: 4px;
+}
+
+/* ── Form area ────────────────────────────────────────────────────────────────── */
+.form-area {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* ── History list ────────────────────────────────────────────────────────────── */
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  font-size: 13px;
+}
+.history-item:last-child { border-bottom: none; }
+
+.history-meta {
+  font-size: 11px;
+  color: var(--color-text-3);
+  margin-top: 2px;
+}
+
+.history-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.history-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-left: auto;
+}
+
+/* ── Scrollbar (thin, macOS style) ──────────────────────────────────────────── */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-hi); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-3); }
+
+/* ── Link ────────────────────────────────────────────────────────────────────── */
+a { color: var(--color-accent); text-decoration: none; }
+a:hover { text-decoration: underline; }

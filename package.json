@@ -10,16 +10,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ark-ui/react": "^5.34.1",
+    "clanker-sdk": "file:../../../../ClankerSDK-2026",
     "preact": "^10.29.0",
-    "viem": "^2.38.3",
-    "clanker-sdk": "file:../../../../ClankerSDK-2026"
+    "viem": "^2.38.3"
   },
   "devDependencies": {
-    "wxt": "^0.20.20",
+    "@tailwindcss/vite": "^4.2.1",
     "@types/chrome": "^0.1.38",
+    "@vitest/coverage-v8": "^2.0.0",
+    "jsdom": "^25.0.0",
     "typescript": "^5.3.0",
     "vitest": "^2.0.0",
-    "jsdom": "^25.0.0",
-    "@vitest/coverage-v8": "^2.0.0"
+    "wxt": "^0.20.20"
   }
 }

@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "UI Preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", "-l", "4321", "preview"],
+      "port": 4321
+    },
+    {
+      "name": "WXT Dev Server",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3000
+    },
+    {
+      "name": "Vitest Watch",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["test:watch"],
+      "port": 51204
+    }
+  ]
+}
