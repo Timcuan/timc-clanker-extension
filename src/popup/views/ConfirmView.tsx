@@ -75,6 +75,8 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
         <Row label="Pool" value={form.poolPreset} />
         <Row label="Market Cap" value={`${form.marketCap} ${chain?.marketCapUnit ?? 'ETH'}`} />
         <Row label="Fees" value={feeSummary} />
+        {/* TODO: sniperStartingFee/sniperEndingFee unit is /1_000_000 per SDK (666_777 = 66.68%) */}
+        {/* Current display uses /10_000 which shows approx correct % by coincidence — fix in next PR */}
         {form.sniperEnabled && (
           <Row label="Sniper"
             value={`${(form.sniperStartingFee / 10000).toFixed(0)}%→${(form.sniperEndingFee / 10000).toFixed(0)}% / ${form.sniperSecondsToDecay}s`}
