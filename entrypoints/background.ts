@@ -5,6 +5,8 @@ import { processImageUrl, processImageBlob } from '../src/lib/image-pipeline.js'
 import { unlockVault, lockVault, isUnlocked, getActiveIds } from '../src/background/vault.js';
 import type { BgMessage } from '../src/lib/messages.js';
 import { storage } from '../src/lib/storage.js';
+import { fetchFromUrl } from '../src/lib/url-fetcher.js';
+import { fetchToken } from '../src/lib/token-fetcher.js';
 
 export default defineBackground(() => {
   // Keepalive — prevents SW death during 45-60s deploys
@@ -110,6 +112,16 @@ async function handleMessage(msg: BgMessage, activeTabId?: number): Promise<unkn
       const cfg = await storage.get();
       await storage.set({ vaultEntries: cfg.vaultEntries.filter(e => e.id !== msg.id) });
       return { ok: true };
+    }
+
+    case 'FETCH_URL': {
+      const { url } = msg;
+      return fetchFromUrl(url);
+    }
+
+    case 'FETCH_TOKEN': {
+      const { address, chainId } = msg;
+      return fetchToken(address, chainId);
     }
 
     default:
