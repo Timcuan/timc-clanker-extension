@@ -128,7 +128,9 @@ export type BgMessage =
   | { type: 'VAULT_STATUS' }
   // ADD_WALLET: encrypt PK in SW so plaintext never lives in popup heap
   | { type: 'ADD_WALLET'; name: string; plainPk: string; password: string }
-  | { type: 'REMOVE_WALLET'; id: string };
+  | { type: 'REMOVE_WALLET'; id: string }
+  | { type: 'FETCH_URL';   url: string }
+  | { type: 'FETCH_TOKEN'; address: `0x${string}`; chainId: number };
 
 export type BgResponse<T extends BgMessage['type']> =
   T extends 'DEPLOY' ? { txHash: `0x${string}`; tokenAddress: `0x${string}` } :
@@ -137,10 +139,23 @@ export type BgResponse<T extends BgMessage['type']> =
   T extends 'GET_HISTORY' ? { records: DeployRecord[] } :
   T extends 'WALLET_PING' ? { ready: true } :
   T extends 'VAULT_STATUS' ? { unlocked: boolean; walletCount: number; activeIds: string[] } :
+  T extends 'FETCH_URL'   ? ScrapedData :
+  T extends 'FETCH_TOKEN' ? ScrapedData :
   { ok: true };
 
 export type BgError = { error: string };
 export type BgResult<T extends BgMessage['type']> = BgResponse<T> | BgError;
+
+// ── Fetch progress states (used by SourceView + PreviewView) ─────────────────
+export type FetchState =
+  | 'idle'
+  | 'fetching-fast'    // service worker fast HTML parse
+  | 'fetching-tab'     // background tab loading/scraping
+  | 'fetching-api'     // Clanker API in flight
+  | 'fetching-rpc'     // on-chain multicall in flight
+  | 'uploading-image'  // Pinata upload in progress
+  | 'done'
+  | 'error';
 
 // ── Service Worker → Popup (Port API, batch only) ───────────────────────────
 export type SwEvent =
@@ -152,5 +167,7 @@ export type SwEvent =
 // ── Content Script messages ──────────────────────────────────────────────────
 export type ContentMessage =
   | { type: 'REGISTER_TAB' }
+  // Note: ENTER/EXIT_PICK_MODE removed — feature replaced by SourceView.
+  // Content script may still handle them gracefully; type removed to prevent new usage.
   | { type: 'SCRAPE' }
   | { type: 'SCRAPE_RESULT'; data: ScrapedData };
