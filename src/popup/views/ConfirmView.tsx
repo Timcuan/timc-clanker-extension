@@ -34,12 +34,12 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
     : form.imageUrl;
 
   return (
-    <div class="view-body">
+    <div class="view-body" style={{ padding: '0 12px 16px' }}>
       {/* Token banner */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: '12px',
-        background: 'var(--bg2)', border: '1px solid var(--border)',
-        borderRadius: 'var(--radius)', padding: '12px', marginBottom: '10px',
+        background: 'var(--color-surface-2)', border: '1px solid var(--color-border)',
+        borderRadius: 'var(--radius-md)', padding: '12px', marginBottom: '10px',
       }}>
         <div class="token-img-ring" style={{ width: '48px', height: '48px', borderRadius: '11px', flexShrink: 0 }}>
           {imageSrc ? (
@@ -61,8 +61,8 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
         <div class="ghost-panel">
           <div class="ghost-title">⚠️ Ghost Deploy Mode</div>
           <div style={{ fontSize: '12px', lineHeight: '1.6' }}>
-            <div>Appears created by: <span style={{ fontFamily: 'monospace' }}>{short(form.ghostTargetAddress)}</span></div>
-            <div style={{ color: 'var(--green)', marginTop: '4px' }}>
+            <div>Appears created by: <span style={{ fontFamily: 'var(--font-mono)' }}>{short(form.ghostTargetAddress)}</span></div>
+            <div style={{ color: 'var(--color-ok)', marginTop: '4px' }}>
               ✅ {(form.ghostYourShareBps / 100).toFixed(0)}% fees → you · admin: you<br/>
               {((10000 - form.ghostYourShareBps) / 100).toFixed(0)}% fees → target · admin: you
             </div>
@@ -84,9 +84,9 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
         )}
         {form.vaultEnabled && <Row label="Vault" value={`${form.vaultSupplyPct}% supply / ${form.vaultLockupDays}d`} />}
         {form.devBuyEnabled && <Row label="Dev Buy" value={`${form.devBuyAmount} ETH`} />}
-        {form.vanityEnabled && <Row label="Vanity" valueColor="var(--green)" value="✓ …b07 suffix" />}
+        {form.vanityEnabled && <Row label="Vanity" valueColor="var(--color-ok)" value="✓ …b07 suffix" />}
         <Row label="Simulate" value={form.simulateBeforeDeploy ? '✓ yes' : '✗ skip'}
-          valueColor={form.simulateBeforeDeploy ? undefined : 'var(--yellow)'} />
+          valueColor={form.simulateBeforeDeploy ? undefined : 'var(--color-warn)'} />
         <Row label="Token Admin" value={short(form.ghostMode ? form.ghostTargetAddress : form.tokenAdmin)} />
       </div>
 
@@ -94,7 +94,7 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
       <div class="summary-card" style={{ marginBottom: '14px' }}>
         <div class="summary-row" style={{ background: 'var(--bg3)' }}>
           <span class="label">Rewards</span>
-          <span class="value" style={{ color: bpsOk ? 'var(--green)' : 'var(--red)' }}>
+          <span class="value" style={{ color: bpsOk ? 'var(--color-ok)' : 'var(--color-err)' }}>
             {bpsOk ? `✓ ${form.rewards.length} slot(s)` : `⚠ ${bpsTotal} bps ≠ 10000`}
           </span>
         </div>
