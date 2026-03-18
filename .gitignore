@@ -3,3 +3,7 @@ node_modules/
 .wxt/
 *.local
 node_modules
+.DS_Store
+~/
+preview/
+docs/superpowers/
