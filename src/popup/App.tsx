@@ -1,9 +1,13 @@
 // src/popup/App.tsx
 import { useState, useEffect } from 'preact/hooks';
-import type { ScrapedData, DeployFormState, BatchDeployResult } from '../lib/messages.js';
+import type { ScrapedData, DeployFormState, BatchDeployResult, FetchState } from '../lib/messages.js';
 import { storage, CONFIG_DEFAULTS } from '../lib/storage.js';
+import type { ExtensionConfig } from '../lib/storage.js';
 import { bgSend } from '../lib/bg-send.js';
 import { buildInitialFormState } from './form-init.js';
+import { isTab } from './window-utils.js';
+import { SourceView } from './views/SourceView.js';
+import { PreviewView } from './views/PreviewView.js';
 import { FormView } from './views/FormView.js';
 import { ConfirmView } from './views/ConfirmView.js';
 import { PendingView } from './views/PendingView.js';
@@ -11,12 +15,16 @@ import { SuccessView } from './views/SuccessView.js';
 import { HistoryView } from './views/HistoryView.js';
 import { BatchView } from './views/BatchView.js';
 
-export type AppView = 'loading' | 'form' | 'confirm' | 'pending' | 'success' | 'history' | 'batch';
+export type AppView =
+  | 'source' | 'preview'
+  | 'form' | 'confirm' | 'pending' | 'success'
+  | 'history' | 'batch';
 
 export interface AppState {
   view: AppView;
   form: DeployFormState;
   scraped: ScrapedData;
+  config: ExtensionConfig;
   imageStatus: 'idle' | 'uploading' | 'done' | 'error';
   imageError?: string;
   txHash?: `0x${string}`;
@@ -26,127 +34,80 @@ export interface AppState {
   vaultWallets: Array<{ id: string; name: string; active: boolean }>;
   batchWalletIds?: string[];
   batchWalletNames?: Record<string, string>;
-  pickMode: boolean;  // element picker active
-  activeTabId?: number;
+  sourceMode?: 'url' | 'image' | 'contract';
+  fetchState: FetchState;
 }
 
 const EMPTY_SCRAPED: ScrapedData = { name: '', symbol: '', socials: {} };
 
 export function App() {
+  const tabMode = isTab();
+
   const [state, setState] = useState<AppState>({
-    view: 'loading',
+    view: 'source',
     form: buildInitialFormState(CONFIG_DEFAULTS, EMPTY_SCRAPED),
     scraped: EMPTY_SCRAPED,
+    config: CONFIG_DEFAULTS,
     imageStatus: 'idle',
     chainId: 8453,
     vaultWallets: [],
-    pickMode: false,
+    fetchState: 'idle',
   });
 
   useEffect(() => {
     init();
-
-    // ── Pick result relay via chrome.storage.session ────────
-    // content script → storage.session → popup (runtime.sendMessage can't reach popup in MV3)
-    const storageHandler = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
-      if (area !== 'session' || !changes.__clanker_pick) return;
-      const val: any = changes.__clanker_pick.newValue;
-      if (!val) return;
-
-      if (val.cancelled) {
-        setState(prev => ({ ...prev, pickMode: false }));
-      } else if (val.data) {
-        const picked: ScrapedData = val.data;
-        setState(prev => ({
-          ...prev,
-          pickMode: false,
-          form: {
-            ...prev.form,
-            name: picked.name || prev.form.name,
-            description: picked.description || prev.form.description,
-            imageUrl: picked.imageUrl || prev.form.imageUrl,
-          },
-          scraped: { ...prev.scraped, ...picked },
-        }));
-        if (picked.imageUrl && !picked.imageUrl.startsWith('ipfs://')) {
-          uploadImage(picked.imageUrl);
-        }
-      }
-      // Clear the key so next pick works
-      chrome.storage.session.remove('__clanker_pick');
-    };
-    chrome.storage.onChanged.addListener(storageHandler);
-    return () => chrome.storage.onChanged.removeListener(storageHandler);
   }, []);
 
   async function init() {
     const config = await storage.get();
-    const vaultWallets = config.vaultEntries.map(e => ({ id: e.id, name: e.name, active: e.active }));
+    const vaultWallets = config.vaultEntries.map(e => ({
+      id: e.id, name: e.name, active: e.active,
+    }));
+    setState(prev => ({
+      ...prev,
+      view: 'source',
+      config,
+      form: buildInitialFormState(config, EMPTY_SCRAPED),
+      vaultWallets,
+      fetchState: 'idle',
+    }));
+  }
 
-    // Scrape active tab — use lastFocusedWindow so this works in detached window too
-    let scraped: ScrapedData = EMPTY_SCRAPED;
-    let activeTabId: number | undefined;
-    try {
-      // Try lastFocusedWindow first (works in detached popup), fallback to WINDOW_ID_NONE
-      const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-      const tab = tabs.find(t => t.url && !t.url.startsWith('chrome://') && !t.url.startsWith('chrome-extension://')) ?? tabs[0];
-      activeTabId = tab?.id;
-      if (tab?.id) {
-        scraped = await chrome.tabs.sendMessage(tab.id, { type: 'SCRAPE' });
-      }
-    } catch { /* no content script or restricted tab */ }
+  // ── Source → Preview ─────────────────────────────────
+  function onSourceFetched(scraped: ScrapedData, mode: 'url' | 'image' | 'contract') {
+    setState(prev => ({
+      ...prev,
+      view: 'preview',
+      scraped,
+      sourceMode: mode,
+      fetchState: 'done',
+    }));
+  }
 
-    const form = buildInitialFormState(config, scraped);
-    const chainId = scraped.detectedChainId ?? config.defaultChain;
-
+  // ── Preview → Form (advanced config) ─────────────────
+  function onPreviewConfirmAdvanced(scraped: ScrapedData, imageIpfsUrl: string | undefined) {
     setState(prev => ({
       ...prev,
       view: 'form',
-      form: { ...form, chainId },
       scraped,
-      vaultWallets,
-      activeTabId,
+      form: {
+        ...buildInitialFormState(prev.config, scraped),
+        imageUrl: imageIpfsUrl ?? '',
+      },
     }));
-
-    // Pre-upload image in background
-    if (scraped.imageUrl && !scraped.imageUrl.startsWith('ipfs://')) {
-      uploadImage(scraped.imageUrl);
-    }
   }
 
-  function uploadImage(url: string) {
-    setState(prev => ({ ...prev, imageStatus: 'uploading' }));
-    bgSend({ type: 'UPLOAD_IMAGE', url })
-      .then(res => {
-        if ('error' in res) throw new Error((res as any).error);
-        setState(prev => ({
-          ...prev,
-          form: { ...prev.form, imageUrl: (res as any).ipfsUrl },
-          imageStatus: 'done',
-        }));
-      })
-      .catch(e => {
-        setState(prev => ({ ...prev, imageStatus: 'error', imageError: (e as Error).message }));
-      });
-  }
-
-  async function enterPickMode() {
-    const { activeTabId } = state;
-    if (!activeTabId) return;
-    try {
-      await chrome.tabs.sendMessage(activeTabId, { type: 'ENTER_PICK_MODE' });
-      setState(prev => ({ ...prev, pickMode: true }));
-    } catch {
-      // Content script not available on this tab
-    }
-  }
-
-  async function exitPickMode() {
-    const { activeTabId } = state;
-    if (activeTabId) {
-      try { await chrome.tabs.sendMessage(activeTabId, { type: 'EXIT_PICK_MODE' }); } catch {}
-    }
-    setState(prev => ({ ...prev, pickMode: false }));
+  // ── Preview → Confirm (quick deploy) ─────────────────
+  function onPreviewQuickDeploy(scraped: ScrapedData, imageIpfsUrl: string | undefined) {
+    setState(prev => ({
+      ...prev,
+      view: 'confirm',
+      scraped,
+      form: {
+        ...buildInitialFormState(prev.config, scraped),
+        imageUrl: imageIpfsUrl ?? '',
+      },
+    }));
   }
 
   function updateForm(patch: Partial<DeployFormState>) {
@@ -177,10 +138,12 @@ export function App() {
   function onDeployAnother() {
     setState(prev => ({
       ...prev,
-      view: 'form',
+      view: 'source',
       txHash: undefined,
       tokenAddress: undefined,
       deployError: undefined,
+      scraped: EMPTY_SCRAPED,
+      fetchState: 'idle',
     }));
   }
 
@@ -188,13 +151,28 @@ export function App() {
     setState(prev => ({ ...prev, view: 'batch', batchWalletIds: walletIds, batchWalletNames: walletNames }));
   }
 
-  // ── Loading ──────────────────────────────────────────────
-  if (state.view === 'loading') {
+  // ── Views ─────────────────────────────────────────────
+  if (state.view === 'source') {
     return (
-      <div class="view-body" style={{ textAlign: 'center', paddingTop: '60px' }}>
-        <div class="spinner-lg" style={{ margin: '0 auto 14px' }} />
-        <p style={{ color: 'var(--text-2)', fontSize: '12px' }}>Loading…</p>
-      </div>
+      <SourceView
+        tabMode={tabMode}
+        fetchState={state.fetchState}
+        onFetched={onSourceFetched}
+        onFetchStateChange={(fs) => setState(prev => ({ ...prev, fetchState: fs }))}
+        onStartFromScratch={() => setState(prev => ({ ...prev, view: 'form' }))}
+      />
+    );
+  }
+
+  if (state.view === 'preview') {
+    return (
+      <PreviewView
+        scraped={state.scraped}
+        sourceMode={state.sourceMode ?? 'url'}
+        onConfirmAdvanced={onPreviewConfirmAdvanced}
+        onQuickDeploy={onPreviewQuickDeploy}
+        onBack={() => setState(prev => ({ ...prev, view: 'source' }))}
+      />
     );
   }
 
@@ -234,6 +212,7 @@ export function App() {
     );
   }
 
+  // Default: form view
   return (
     <FormView
       form={state.form}
@@ -246,9 +225,6 @@ export function App() {
       onHistory={() => setState(prev => ({ ...prev, view: 'history' }))}
       vaultWallets={state.vaultWallets}
       onBatchDeploy={onBatchDeploy}
-      pickMode={state.pickMode}
-      onPickMode={enterPickMode}
-      onCancelPick={exitPickMode}
     />
   );
 }
