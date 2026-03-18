@@ -29,3 +29,21 @@ export function detachToWindow(): void {
 export function openOptions(): void {
   chrome.tabs.create({ url: chrome.runtime.getURL('options.html') });
 }
+
+/**
+ * Returns true when running as a full browser tab (?tab=1).
+ * Used to enable drag-and-drop — popup closes on outside click, but a tab does not.
+ */
+export function isTab(): boolean {
+  return new URLSearchParams(location.search).has('tab');
+}
+
+/**
+ * Open the popup as a full browser tab — drag & drop works without popup-close issues.
+ * The tab URL includes ?tab=1 so isTab() returns true inside it.
+ */
+export function openAsTab(): void {
+  chrome.tabs.create({
+    url: chrome.runtime.getURL('popup.html') + '?tab=1',
+  });
+}
