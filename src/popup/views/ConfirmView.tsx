@@ -41,14 +41,16 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
         background: 'var(--bg2)', border: '1px solid var(--border)',
         borderRadius: 'var(--radius)', padding: '12px', marginBottom: '10px',
       }}>
-        {imageSrc ? (
-          <img src={imageSrc} style={{ width: '44px', height: '44px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} alt="" />
-        ) : (
-          <div style={{ width: '44px', height: '44px', borderRadius: '8px', background: 'var(--bg3)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px', flexShrink: 0 }}>🪙</div>
-        )}
+        <div class="token-img-ring" style={{ width: '48px', height: '48px', borderRadius: '11px', flexShrink: 0 }}>
+          {imageSrc ? (
+            <img src={imageSrc} class="token-img" style={{ borderRadius: '9px' }} alt="" />
+          ) : (
+            <div class="token-img" style={{ borderRadius: '9px', fontSize: '20px' }}>🪙</div>
+          )}
+        </div>
         <div>
-          <div style={{ fontWeight: 700, fontSize: '15px', letterSpacing: '-0.02em' }}>{form.name}</div>
-          <div style={{ color: 'var(--text-dim)', fontSize: '12px', marginTop: '1px' }}>
+          <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: '16px', letterSpacing: '-0.03em' }}>{form.name}</div>
+          <div style={{ color: 'var(--text-2)', fontSize: '12px', marginTop: '2px', fontFamily: "'JetBrains Mono', monospace" }}>
             ${form.symbol} · {chain?.name ?? `Chain ${form.chainId}`}
           </div>
         </div>
@@ -96,7 +98,7 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
         </div>
         {form.rewards.map((r, i) => (
           <div key={i} class="summary-row">
-            <span class="label" style={{ fontFamily: 'monospace' }}>{short(r.recipient)}</span>
+            <span class="label" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{short(r.recipient)}</span>
             <span class="value">{(r.bps / 100).toFixed(1)}% {r.token}</span>
           </div>
         ))}

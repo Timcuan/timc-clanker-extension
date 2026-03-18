@@ -32,13 +32,14 @@ function Section({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div class="section">
+    <div class={`section ${open ? 'open' : ''}`}>
       <div class={`section-header ${open ? 'open' : ''}`} onClick={() => setOpen(o => !o)}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span class="chevron">▼</span>
+          <span class="section-dot" />
           {title}
           {summary && <span class="summary">{summary}</span>}
         </span>
+        <span class="chevron">▼</span>
       </div>
       <div class={`section-body ${open ? '' : 'hidden'}`}>{children}</div>
     </div>
@@ -271,11 +272,13 @@ export function FormView({
       <div class="quick-card">
         {/* Token preview */}
         <div class="token-preview">
-          {imageSrc ? (
-            <img class="token-img" src={imageSrc} alt={form.name} />
-          ) : (
-            <div class="token-img" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>🪙</div>
-          )}
+          <div class="token-img-ring">
+            {imageSrc ? (
+              <img class="token-img" src={imageSrc} alt={form.name} />
+            ) : (
+              <div class="token-img">🪙</div>
+            )}
+          </div>
           <div class="token-info" style={{ flex: 1, minWidth: 0 }}>
             <h2 style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {form.name || 'Unnamed Token'}
