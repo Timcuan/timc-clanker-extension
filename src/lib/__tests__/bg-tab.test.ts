@@ -34,7 +34,7 @@ describe('bg-tab', () => {
       return { name: 'Test', symbol: 'TEST', socials: {} };
     });
 
-    const result = await retryMessageForTest(send, 3, 10);
+    const result = await retryMessageForTest<{ name: string }>(send as () => Promise<{ name: string }>, 3, 10);
     expect(result.name).toBe('Test');
     expect(send).toHaveBeenCalledTimes(3);
   });

@@ -2,7 +2,7 @@ import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
-  extensionApi: 'chrome',
+  browser: 'chrome',
   manifest: {
     name: 'Clanker Token Deployer',
     version: '1.0.0',

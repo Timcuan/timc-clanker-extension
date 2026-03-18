@@ -11,7 +11,7 @@ globalThis.chrome = {
       get: vi.fn().mockResolvedValue({}),
       set: vi.fn().mockResolvedValue(undefined),
     },
-  },
+  } as any,
 };
 
 beforeEach(() => vi.clearAllMocks());

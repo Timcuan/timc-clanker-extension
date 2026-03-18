@@ -18,6 +18,7 @@ const sessionStore: Record<string, any> = {};
 globalThis.chrome = {
   storage: {
     session: {
+      // @ts-ignore
       get: vi.fn(async (key: string) => ({ [key]: sessionStore[key] })),
       set: vi.fn(async (obj: Record<string, any>) => { Object.assign(sessionStore, obj); }),
     },
