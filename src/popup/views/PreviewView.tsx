@@ -89,15 +89,15 @@ export function PreviewView({ scraped, sourceMode, onConfirmAdvanced, onQuickDep
   return (
     <div class="view-body">
       {/* ── Header ── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px 6px', borderBottom: '1px solid var(--color-border)' }}>
-        <button class="btn btn-ghost btn-sm" onClick={onBack}>← Back</button>
-        <span style={{ fontSize: '12px', color: 'var(--color-text-3)', flex: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px 6px', borderBottom: '1px solid var(--color-border)' }}>
+        <button class="btn btn-ghost btn-sm" onClick={onBack} style={{ padding: '4px 8px' }}>← Back</button>
+        <span style={{ fontSize: '11px', color: 'var(--color-text-3)', flex: 1, fontWeight: 500 }}>
           {SOURCE_LABELS[sourceMode]}{sourceDomain ? ` · ${sourceDomain}` : ''}
         </span>
       </div>
 
       {/* ── Token Banner ── */}
-      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '12px 14px', borderBottom: '1px solid var(--color-border)' }}>
+      <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start', padding: '12px', borderBottom: '1px solid var(--color-border)' }}>
         <div class="token-img-ring">
           {displayImageSrc
             ? <img src={displayImageSrc} class="token-img" alt="" />

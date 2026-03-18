@@ -134,21 +134,21 @@ export function SourceView({ tabMode, fetchState, onFetched, onFetchStateChange,
 
   return (
     <div class="view-body source-view">
-      <div style={{ padding: '20px 16px 12px' }}>
-        <h1 class="heading-lg">Deploy a new token</h1>
-        <p style={{ fontSize: '13px', color: 'var(--color-text-2)', marginTop: '4px' }}>
-          Choose how to fill in the token details
-        </p>
+      <div style={{ padding: '18px 14px 10px' }}>
+        <div class="heading-lg">Deploy a token</div>
+        <div style={{ fontSize: '12px', color: 'var(--color-text-3)', marginTop: '4px', fontWeight: 500 }}>
+          Choose a source for the token details
+        </div>
       </div>
 
       {/* ── URL Panel ─── */}
       <div class={`source-card card ${open === 'url' ? 'expanded' : ''}`}>
         <div class="source-card-header" onClick={() => toggle('url')}>
-          <span class="source-icon">🔗</span>
+          <div class="source-icon-wrap url">🔗</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: '14px' }}>Paste Link / Thread URL</div>
-            <div class="label-sm" style={{ marginTop: '2px', textTransform: 'none', letterSpacing: 0 }}>
-              twitter, warpcast, zora, any page
+            <div style={{ fontWeight: 600, fontSize: '13px', letterSpacing: '-0.01em' }}>Paste URL</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-3)', marginTop: '1px' }}>
+              Twitter · Farcaster · Zora · any page
             </div>
           </div>
           <span class="chevron">{open === 'url' ? '▲' : '▼'}</span>
@@ -179,11 +179,11 @@ export function SourceView({ tabMode, fetchState, onFetched, onFetchStateChange,
       {/* ── Image Drop Panel ─── */}
       <div class={`source-card card ${open === 'image' ? 'expanded' : ''}`}>
         <div class="source-card-header" onClick={() => toggle('image')}>
-          <span class="source-icon">📁</span>
+          <div class="source-icon-wrap image">🖼️</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: '14px' }}>Drop Image</div>
-            <div class="label-sm" style={{ marginTop: '2px', textTransform: 'none', letterSpacing: 0 }}>
-              JPG, PNG, GIF · max 5MB
+            <div style={{ fontWeight: 600, fontSize: '13px', letterSpacing: '-0.01em' }}>Drop Image</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-3)', marginTop: '1px' }}>
+              JPG · PNG · GIF · max 5 MB
             </div>
           </div>
           <span class="chevron">{open === 'image' ? '▲' : '▼'}</span>
@@ -231,11 +231,11 @@ export function SourceView({ tabMode, fetchState, onFetched, onFetchStateChange,
       {/* ── Contract Panel ─── */}
       <div class={`source-card card ${open === 'contract' ? 'expanded' : ''}`}>
         <div class="source-card-header" onClick={() => toggle('contract')}>
-          <span class="source-icon">🔷</span>
+          <div class="source-icon-wrap contract">⬡</div>
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 600, fontSize: '14px' }}>Copy from Contract</div>
-            <div class="label-sm" style={{ marginTop: '2px', textTransform: 'none', letterSpacing: 0 }}>
-              fetch name, symbol, image from any token
+            <div style={{ fontWeight: 600, fontSize: '13px', letterSpacing: '-0.01em' }}>Contract Address</div>
+            <div style={{ fontSize: '11px', color: 'var(--color-text-3)', marginTop: '1px' }}>
+              Copy name, symbol & image from any token
             </div>
           </div>
           <span class="chevron">{open === 'contract' ? '▲' : '▼'}</span>

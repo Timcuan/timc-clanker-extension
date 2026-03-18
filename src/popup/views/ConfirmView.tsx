@@ -49,8 +49,8 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
           )}
         </div>
         <div>
-          <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: '16px', letterSpacing: '-0.03em' }}>{form.name}</div>
-          <div style={{ color: 'var(--text-2)', fontSize: '12px', marginTop: '2px', fontFamily: "'JetBrains Mono', monospace" }}>
+          <div style={{ fontWeight: 700, fontSize: '16px', letterSpacing: '-0.02em' }}>{form.name}</div>
+          <div style={{ color: 'var(--color-text-2)', fontSize: '12px', marginTop: '2px', fontFamily: 'var(--font-mono)' }}>
             ${form.symbol} · {chain?.name ?? `Chain ${form.chainId}`}
           </div>
         </div>
@@ -100,7 +100,7 @@ export function ConfirmView({ form, onBack, onConfirm }: Props) {
         </div>
         {form.rewards.map((r, i) => (
           <div key={i} class="summary-row">
-            <span class="label" style={{ fontFamily: "'JetBrains Mono', monospace" }}>{short(r.recipient)}</span>
+            <span class="label" style={{ fontFamily: 'var(--font-mono)' }}>{short(r.recipient)}</span>
             <span class="value">{(r.bps / 100).toFixed(1)}% {r.token}</span>
           </div>
         ))}

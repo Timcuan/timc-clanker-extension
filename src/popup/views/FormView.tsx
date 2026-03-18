@@ -87,12 +87,12 @@ function BpsBar({ total }: { total: number }) {
   const pct = Math.min((total / 10000) * 100, 100);
   const valid = total === 10000;
   return (
-    <div class="bps-bar-wrap">
-      <div class="bps-bar">
-        <div class={`bps-bar-fill ${valid ? '' : 'invalid'}`} style={{ width: `${pct}%` }} />
+    <div>
+      <div class="bps-bar-wrap">
+        <div class="bps-bar" style={{ width: `${pct}%`, background: valid ? 'var(--color-ok)' : 'var(--color-warn)' }} />
       </div>
-      <div class={`bps-bar-label ${valid ? '' : 'invalid'}`}>
-        {valid ? `✓ ${total} bps (100%)` : `${total} / 10000 bps — must equal 10000`}
+      <div style={{ fontSize: '11px', marginTop: '4px', fontWeight: 500, color: valid ? 'var(--color-ok)' : 'var(--color-warn)' }}>
+        {valid ? `✓ 10000 bps (100%)` : `${total} / 10000 bps — must equal 10000`}
       </div>
     </div>
   );
@@ -242,16 +242,16 @@ export function FormView({
           {/* Pin — detaches popup to persistent window */}
           <button
             class="icon-btn"
-            title={isDetached() ? 'Already pinned' : 'Pin — keep open'}
+            title={isDetached() ? 'Already pinned' : 'Pin window'}
             onClick={isDetached() ? undefined : detachToWindow}
             style={isDetached() ? { color: 'var(--v2)', cursor: 'default' } : {}}
           >
-            {isDetached() ? '📌' : '📍'}
+            {isDetached() ? '◉' : '◎'}
           </button>
 
           {templates.length > 0 && (
             <div style={{ position: 'relative' }}>
-              <button class="icon-btn" title="Load Template" onClick={() => setShowTemplates(s => !s)}>📂</button>
+              <button class="icon-btn" title="Load Template" onClick={() => setShowTemplates(s => !s)}>⊞</button>
               {showTemplates && (
                 <div class="template-dropdown">
                   <div class="template-dropdown-label">Load Template</div>
@@ -262,9 +262,9 @@ export function FormView({
               )}
             </div>
           )}
-          <button class="icon-btn" title="History" onClick={onHistory}>📋</button>
+          <button class="icon-btn" title="History" onClick={onHistory}>☰</button>
           {/* Settings — fixed: use direct URL instead of openOptionsPage() */}
-          <button class="icon-btn" title="Options" onClick={openOptions}>⚙</button>
+          <button class="icon-btn" title="Options" onClick={openOptions}>⊙</button>
         </div>
       </div>
 
@@ -283,8 +283,8 @@ export function FormView({
             <h2 style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {form.name || 'Unnamed Token'}
             </h2>
-            <div class="symbol">
-              <span>${form.symbol || 'TOKEN'}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '4px' }}>
+              <span class="symbol">${form.symbol || 'TOKEN'}</span>
               <span class="chain-tag">{chain?.name ?? `Chain ${form.chainId}`}</span>
             </div>
           </div>
